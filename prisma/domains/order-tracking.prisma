@@ -1,0 +1,26 @@
+model Delivery {
+  id           String         @id @default(cuid())
+  orderId      String
+  deliveryType DeliveryType
+  status       DeliveryStatus @default(ASSIGNED)
+  currentLat   Float?
+  currentLng   Float?
+  startedAt    DateTime?
+  deliveredAt  DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@index([orderId])
+}
+
+enum DeliveryType {
+  SHOP
+  DELIVERY_BOY
+  PICKUP
+}
+
+enum DeliveryStatus {
+  ASSIGNED
+  ON_THE_WAY
+  DELIVERED
+}
