@@ -1,6 +1,6 @@
 import { OtpChannel, UserStatus } from '@prisma/client'
-import { prisma } from '../lib/prisma'
-import { comparePin, generateOtp, hashOtp, hashPin } from '../lib/security'
+import { prisma } from '../lib/prisma.js'
+import { comparePin, generateOtp, hashOtp, hashPin } from '../lib/security.js'
 
 const OTP_TTL_MS = 5 * 60_000
 

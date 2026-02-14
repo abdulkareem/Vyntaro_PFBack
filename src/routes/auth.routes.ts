@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { login, registerStart, setUserPin, verifyRegistrationOtp } from '../services/auth.service'
+import { login, registerStart, setUserPin, verifyRegistrationOtp } from '../services/auth.service.js'
 
 export const authRouter = Router()
 
