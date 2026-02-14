@@ -1,0 +1,71 @@
+model UserAccount {
+  id            String        @id @default(cuid())
+  phone         String        @unique
+  email         String?       @unique
+  country       String?
+  region        String?
+  userStatus    UserStatus    @default(GHOST)
+  accountStatus AccountStatus @default(ACTIVE)
+  verifiedAt    DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  devices       UserDevice[]
+  userPin       UserPin?
+  otps          VerificationCode[]
+}
+
+model UserDevice {
+  id           String      @id @default(cuid())
+  userId       String
+  platform     String
+  pushToken    String?     @unique
+  fingerprint  String
+  isTrusted    Boolean     @default(false)
+  createdAt    DateTime    @default(now())
+
+  user         UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fingerprint])
+  @@index([userId])
+}
+
+model VerificationCode {
+  id         String      @id @default(cuid())
+  userId     String
+  channel    OtpChannel
+  codeHash   String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime    @default(now())
+
+  user       UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, channel])
+}
+
+model UserPin {
+  id          String      @id @default(cuid())
+  userId       String     @unique
+  pinHash      String
+  updatedAt    DateTime   @updatedAt
+
+  user         UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum UserStatus {
+  GHOST
+  ACTIVE
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum OtpChannel {
+  PHONE
+  EMAIL
+  DEVICE
+}
