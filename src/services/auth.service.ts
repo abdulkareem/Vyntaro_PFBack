@@ -1,10 +1,10 @@
-import { OtpChannel, UserStatus } from '@prisma/client'
+import { UserStatus } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
-import { comparePin, generateOtp, hashOtp, hashPin } from '../lib/security.js'
+import { comparePin, hashPin } from '../lib/security.js'
 import { sendEmailOtp } from '../messaging/email/email.service.js'
 import { sendOtp } from '../messaging/otp.service.js'
-
-const OTP_TTL_MS = 5 * 60_000
+import { createOtp, verifyOtp } from './otp.store.js'
+import { generateOtp } from './otp.service.js'
 
 type RegisterInput = {
   phone: string
@@ -29,50 +29,48 @@ export async function registerStart(input: RegisterInput) {
     }
   })
 
-  const phoneOtp = generateOtp()
-  const emailOtp = generateOtp()
-  const expiresAt = new Date(Date.now() + OTP_TTL_MS)
+  const otp = generateOtp()
+  await createOtp(input.phone, otp, input.email ?? null, input.country, input.region)
 
-  await prisma.verificationCode.createMany({
-    data: [
-      { userId: user.id, channel: OtpChannel.PHONE, codeHash: hashOtp(phoneOtp), expiresAt },
-      { userId: user.id, channel: OtpChannel.EMAIL, codeHash: hashOtp(emailOtp), expiresAt }
-    ]
-  })
-
-  await sendOtp(input.phone, phoneOtp)
+  await sendOtp(input.phone, otp)
   if (input.email) {
-    sendEmailOtp(input.email, emailOtp).catch(() => {})
+    sendEmailOtp(input.email, otp).catch(() => {})
   }
 
   return {
     userId: user.id,
-    devOtp: process.env.NODE_ENV === 'production' ? undefined : { phoneOtp, emailOtp }
+    devOtp: process.env.NODE_ENV === 'production' ? undefined : { otp }
   }
 }
 
-export async function verifyRegistrationOtp(phone: string, phoneCode: string, emailCode: string) {
+export async function verifyRegistrationOtp(phone: string, otp: string) {
   const user = await prisma.userAccount.findUnique({ where: { phone } })
   if (!user) return { ok: false as const, reason: 'not_found' as const }
 
-  const records = await prisma.verificationCode.findMany({
-    where: { userId: user.id, consumedAt: null, expiresAt: { gt: new Date() }, channel: { in: [OtpChannel.PHONE, OtpChannel.EMAIL] } },
-    orderBy: { createdAt: 'desc' },
-    take: 10
+  try {
+    await verifyOtp(phone, otp)
+  } catch (error) {
+    return {
+      ok: false as const,
+      reason: error instanceof Error ? error.message : 'invalid'
+    }
+  }
+
+  const updatedUser = await prisma.userAccount.update({
+    where: { id: user.id },
+    data: { verifiedAt: new Date(), userStatus: UserStatus.ACTIVE }
   })
 
-  const phoneMatch = records.find(r => r.channel === OtpChannel.PHONE && r.codeHash === hashOtp(phoneCode))
-  const emailMatch = records.find(r => r.channel === OtpChannel.EMAIL && r.codeHash === hashOtp(emailCode))
-
-  if (!phoneMatch || !emailMatch) return { ok: false as const, reason: 'invalid' as const }
-
-  await prisma.$transaction([
-    prisma.verificationCode.update({ where: { id: phoneMatch.id }, data: { consumedAt: new Date() } }),
-    prisma.verificationCode.update({ where: { id: emailMatch.id }, data: { consumedAt: new Date() } }),
-    prisma.userAccount.update({ where: { id: user.id }, data: { verifiedAt: new Date(), userStatus: UserStatus.ACTIVE } })
-  ])
-
-  return { ok: true as const }
+  return {
+    ok: true as const,
+    user: {
+      id: updatedUser.id,
+      phone: updatedUser.phone,
+      email: updatedUser.email,
+      verifiedAt: updatedUser.verifiedAt
+    },
+    next: '/dashboard'
+  }
 }
 
 export async function setUserPin(phone: string, pin: string) {
@@ -103,6 +101,7 @@ export async function login(phone: string, pin: string) {
       phone: user.phone,
       email: user.email,
       verifiedAt: user.verifiedAt
-    }
+    },
+    next: '/dashboard'
   }
 }

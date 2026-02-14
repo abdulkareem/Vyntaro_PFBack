@@ -22,13 +22,12 @@ authRouter.post('/register/start', async (req, res) => {
 authRouter.post('/register/verify', async (req, res) => {
   const schema = z.object({
     phone: z.string().regex(/^[0-9]{7,15}$/),
-    phoneCode: z.string().length(6),
-    emailCode: z.string().length(6)
+    otp: z.string().length(6)
   })
   const parsed = schema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
 
-  const result = await verifyRegistrationOtp(parsed.data.phone, parsed.data.phoneCode, parsed.data.emailCode)
+  const result = await verifyRegistrationOtp(parsed.data.phone, parsed.data.otp)
   if (!result.ok) return res.status(400).json(result)
   return res.json(result)
 })
