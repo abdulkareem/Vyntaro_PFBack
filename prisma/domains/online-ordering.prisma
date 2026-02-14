@@ -1,0 +1,39 @@
+model OrderIntent {
+  id             String            @id @default(cuid())
+  customerUserId String
+  source         OrderSource
+  status         OrderStatus       @default(PENDING)
+  rawInput       String?
+  createdAt      DateTime          @default(now())
+
+  customerUser   UserAccount       @relation(fields: [customerUserId], references: [id], onDelete: Cascade)
+  items          OrderIntentItem[]
+
+  @@index([customerUserId])
+  @@index([createdAt])
+}
+
+model OrderIntentItem {
+  id             String      @id @default(cuid())
+  orderIntentId  String
+  name           String
+  quantity       Int
+  confidence     Float
+
+  orderIntent    OrderIntent @relation(fields: [orderIntentId], references: [id], onDelete: Cascade)
+
+  @@index([orderIntentId])
+}
+
+enum OrderSource {
+  TEXT
+  IMAGE
+  VOICE
+  AUTO_REORDER
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+}
