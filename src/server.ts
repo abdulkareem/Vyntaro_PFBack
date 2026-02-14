@@ -14,7 +14,8 @@ app.get('/health', (_req, res) => {
 
 app.use('/api/auth', authRouter)
 
-const port = Number(process.env.PORT ?? 4000)
-app.listen(port, () => {
-  console.log(`Backend listening on http://localhost:${port}`)
+const port = Number(process.env.PORT || 8080)
+
+app.listen(port, '0.0.0.0', () => {
+  console.log(`Backend running on port ${port}`)
 })
