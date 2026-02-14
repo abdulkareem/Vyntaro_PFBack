@@ -1,0 +1,66 @@
+model Profile {
+  id            String      @id @default(cuid())
+  userId        String
+  type          ProfileType @default(INDIVIDUAL)
+  displayName   String?
+  isActive      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  user          UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ledger        LedgerAccount?
+  preferences   DashboardPreference[]
+
+  @@index([userId])
+}
+
+model LedgerAccount {
+  id           String              @id @default(cuid())
+  profileId    String              @unique
+  balance      Decimal             @default(0) @db.Decimal(18, 2)
+  currency     String              @default("INR")
+
+  profile      Profile             @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  transactions LedgerTransaction[]
+}
+
+model LedgerTransaction {
+  id             String        @id @default(cuid())
+  ledgerId       String
+  description    String?
+  createdAt      DateTime      @default(now())
+
+  ledger         LedgerAccount @relation(fields: [ledgerId], references: [id], onDelete: Cascade)
+  entries        LedgerEntry[]
+
+  @@index([ledgerId])
+  @@index([createdAt])
+}
+
+model LedgerEntry {
+  id            String            @id @default(cuid())
+  transactionId String
+  account       LedgerAccountType
+  amount        Decimal           @db.Decimal(18, 2)
+  type          EntryType
+
+  transaction   LedgerTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([transactionId])
+}
+
+enum ProfileType {
+  INDIVIDUAL
+}
+
+enum LedgerAccountType {
+  CASH
+  BANK
+  UPI
+  EXPENSE
+}
+
+enum EntryType {
+  DEBIT
+  CREDIT
+}
