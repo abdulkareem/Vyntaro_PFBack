@@ -1,0 +1,25 @@
+model Bill {
+  id             String      @id @default(cuid())
+  customerUserId String
+  billNumber     String
+  totalAmount    Decimal     @db.Decimal(18, 2)
+  createdAt      DateTime    @default(now())
+
+  customerUser   UserAccount @relation(fields: [customerUserId], references: [id], onDelete: Cascade)
+  items          BillItem[]
+
+  @@index([customerUserId])
+  @@index([createdAt])
+}
+
+model BillItem {
+  id       String  @id @default(cuid())
+  billId   String
+  name     String
+  price    Decimal @db.Decimal(18, 2)
+  quantity Int
+
+  bill     Bill    @relation(fields: [billId], references: [id], onDelete: Cascade)
+
+  @@index([billId])
+}
