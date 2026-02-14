@@ -1,6 +1,8 @@
 import { OtpChannel, UserStatus } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { comparePin, generateOtp, hashOtp, hashPin } from '../lib/security.js'
+import { sendEmailOtp } from '../messaging/email/email.service.js'
+import { sendOtp } from '../messaging/otp.service.js'
 
 const OTP_TTL_MS = 5 * 60_000
 
@@ -37,6 +39,11 @@ export async function registerStart(input: RegisterInput) {
       { userId: user.id, channel: OtpChannel.EMAIL, codeHash: hashOtp(emailOtp), expiresAt }
     ]
   })
+
+  await sendOtp(input.phone, phoneOtp)
+  if (input.email) {
+    sendEmailOtp(input.email, emailOtp).catch(() => {})
+  }
 
   return {
     userId: user.id,
