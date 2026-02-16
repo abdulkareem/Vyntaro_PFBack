@@ -7,61 +7,414 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-/// Active runtime schema for personal-finance registration/auth only.
-/// Domain split reference files are under prisma/domains/*.prisma
+/// Core user/account models
 model UserAccount {
-  id            String        @id @default(cuid())
-  phone         String        @unique
-  email         String?       @unique
-  country       String?
-  region        String?
-  userStatus    UserStatus    @default(GHOST)
-  accountStatus AccountStatus @default(ACTIVE)
-  verifiedAt    DateTime?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  id              String        @id @default(cuid())
+  phone           String        @unique
+  email           String?       @unique
+  profilePhotoUrl String?
+  country         String?
+  region          String?
+  userStatus      UserStatus    @default(GHOST)
+  accountStatus   AccountStatus @default(ACTIVE)
+  verifiedAt      DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
-  devices       UserDevice[]
-  userPin       UserPin?
-  otps          VerificationCode[]
+  devices  UserDevice[]
+  userPin  UserPin?
+  otps     VerificationCode[]
+  profiles Profile[]
 }
 
 model UserDevice {
-  id           String      @id @default(cuid())
-  userId       String
-  platform     String
-  pushToken    String?     @unique
-  fingerprint  String
-  isTrusted    Boolean     @default(false)
-  createdAt    DateTime    @default(now())
+  id          String   @id @default(cuid())
+  userId      String
+  platform    String
+  pushToken   String?  @unique
+  fingerprint String
+  isTrusted   Boolean  @default(false)
+  createdAt   DateTime @default(now())
 
-  user         UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, fingerprint])
   @@index([userId])
 }
 
 model VerificationCode {
-  id         String      @id @default(cuid())
+  id         String     @id @default(cuid())
   userId     String
   channel    OtpChannel
   codeHash   String
   expiresAt  DateTime
   consumedAt DateTime?
-  createdAt  DateTime    @default(now())
+  createdAt  DateTime   @default(now())
 
-  user       UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, channel])
 }
 
 model UserPin {
-  id          String      @id @default(cuid())
-  userId      String      @unique
-  pinHash     String
-  updatedAt   DateTime    @updatedAt
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  pinHash   String
+  updatedAt DateTime @updatedAt
 
-  user        UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Personal-finance workspace
+model Profile {
+  id                String      @id @default(cuid())
+  userId            String
+  type              ProfileType @default(INDIVIDUAL)
+  displayName       String?
+  preferredCurrency String      @default("INR")
+  timezone          String      @default("UTC")
+  isActive          Boolean     @default(true)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  user                  UserAccount            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dashboardPreferences  DashboardPreference[]
+  accounts              FinancialAccount[]
+  categories            Category[]
+  journalEntries        JournalEntry[]
+  budgetPlans           BudgetPlan[]
+  budgetRecommendations BudgetRecommendation[]
+  merchants             Merchant[]
+  items                 CatalogItem[]
+  receipts              Receipt[]
+  reorderSuggestions    ReorderSuggestion[]
+  vehicles              Vehicle[]
+  trips                 TripLog[]
+  travelSuggestions     TravelSuggestion[]
+  billCaptures          BillCapture[]
+  assistantSuggestions  AssistantSuggestion[]
+
+  @@index([userId])
+}
+
+/// Dashboard configuration
+model DashboardPreference {
+  id         String              @id @default(cuid())
+  profileId  String
+  widgetKey  String
+  widgetType DashboardWidgetType
+  isVisible  Boolean             @default(true)
+  position   Int                 @default(0)
+  config     Json?
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  profile Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, widgetKey])
+}
+
+/// Double-entry accounting: chart of accounts + journal entries + journal lines.
+model FinancialAccount {
+  id             String          @id @default(cuid())
+  profileId      String
+  name           String
+  code           String?
+  accountType    AccountType
+  subtype        AccountSubtype?
+  currency       String          @default("INR")
+  openingBalance Decimal         @default(0) @db.Decimal(18, 2)
+  isArchived     Boolean         @default(false)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  profile      Profile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  journalLines JournalLine[]
+
+  @@unique([profileId, name])
+  @@index([profileId, accountType])
+}
+
+model Category {
+  id               String         @id @default(cuid())
+  profileId        String
+  parentCategoryId String?
+  name             String
+  slug             String
+  description      String?
+  kind             CategoryKind
+  bucket           CategoryBucket
+  isSystem         Boolean        @default(false)
+  isActive         Boolean        @default(true)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  profile               Profile                @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  parentCategory        Category?              @relation("CategoryParent", fields: [parentCategoryId], references: [id], onDelete: SetNull)
+  subcategories         Category[]             @relation("CategoryParent")
+  journalLines          JournalLine[]
+  budgetPlans           BudgetPlan[]
+  budgetRecommendations BudgetRecommendation[]
+
+  @@unique([profileId, slug])
+  @@index([profileId, kind, bucket])
+}
+
+model JournalEntry {
+  id              String      @id @default(cuid())
+  profileId       String
+  externalRef     String?
+  description     String?
+  transactionDate DateTime
+  postingDate     DateTime    @default(now())
+  source          EntrySource @default(MANUAL)
+  notes           String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  profile  Profile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  lines    JournalLine[]
+  receipts Receipt[]
+
+  @@index([profileId, transactionDate])
+}
+
+model JournalLine {
+  id             String         @id @default(cuid())
+  journalEntryId String
+  accountId      String
+  categoryId     String?
+  description    String?
+  direction      EntryDirection
+  amount         Decimal        @db.Decimal(18, 2)
+  createdAt      DateTime       @default(now())
+
+  journalEntry JournalEntry     @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  account      FinancialAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  category     Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([journalEntryId])
+  @@index([accountId])
+  @@index([categoryId])
+}
+
+/// Budgeting and planning
+model BudgetPlan {
+  id            String           @id @default(cuid())
+  profileId     String
+  categoryId    String
+  periodType    BudgetPeriodType
+  periodStart   DateTime
+  periodEnd     DateTime
+  amount        Decimal          @db.Decimal(18, 2)
+  autoGenerated Boolean          @default(false)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  profile  Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, periodType, periodStart, periodEnd])
+}
+
+model BudgetRecommendation {
+  id              String           @id @default(cuid())
+  profileId       String
+  categoryId      String
+  periodType      BudgetPeriodType
+  suggestedAmount Decimal          @db.Decimal(18, 2)
+  confidenceScore Decimal          @db.Decimal(5, 2)
+  rationale       String?
+  generatedAt     DateTime         @default(now())
+
+  profile  Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, generatedAt])
+}
+
+/// Bills, shopping, purchase history, and reorder suggestions
+model Merchant {
+  id           String       @id @default(cuid())
+  profileId    String
+  name         String
+  merchantType MerchantType @default(STORE)
+  address      String?
+  latitude     Decimal?     @db.Decimal(10, 7)
+  longitude    Decimal?     @db.Decimal(10, 7)
+  phone        String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  profile  Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  receipts Receipt[]
+
+  @@index([profileId, name])
+}
+
+model CatalogItem {
+  id          String   @id @default(cuid())
+  profileId   String
+  name        String
+  brand       String?
+  defaultUnit String?
+  barcode     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  profile            Profile             @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  purchaseItems      PurchaseItem[]
+  reorderSuggestions ReorderSuggestion[]
+
+  @@index([profileId, name])
+}
+
+model Receipt {
+  id               String         @id @default(cuid())
+  profileId        String
+  merchantId       String?
+  journalEntryId   String?
+  billNumber       String?
+  purchasedAt      DateTime
+  totalAmount      Decimal        @db.Decimal(18, 2)
+  taxAmount        Decimal?       @db.Decimal(18, 2)
+  imageUrl         String?
+  sourceType       BillSourceType @default(TEXT_CHAT)
+  rawExtractedText String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  profile      Profile        @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  merchant     Merchant?      @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+  journalEntry JournalEntry?  @relation(fields: [journalEntryId], references: [id], onDelete: SetNull)
+  items        PurchaseItem[]
+  captures     BillCapture[]
+  tripLogs     TripLog[]
+
+  @@index([profileId, purchasedAt])
+}
+
+model PurchaseItem {
+  id         String   @id @default(cuid())
+  receiptId  String
+  itemId     String
+  quantity   Decimal  @db.Decimal(18, 3)
+  unitPrice  Decimal  @db.Decimal(18, 2)
+  totalPrice Decimal  @db.Decimal(18, 2)
+  createdAt  DateTime @default(now())
+
+  receipt Receipt     @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  item    CatalogItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([receiptId])
+  @@index([itemId])
+}
+
+model ReorderSuggestion {
+  id                String   @id @default(cuid())
+  profileId         String
+  itemId            String
+  suggestedQuantity Decimal  @db.Decimal(18, 3)
+  nextOrderDate     DateTime
+  confidenceScore   Decimal  @db.Decimal(5, 2)
+  rationale         String?
+  createdAt         DateTime @default(now())
+
+  profile Profile     @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  item    CatalogItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, nextOrderDate])
+}
+
+/// Mobility tracking and travel suggestions
+model Vehicle {
+  id             String      @id @default(cuid())
+  profileId      String
+  name           String
+  vehicleType    VehicleType
+  registrationNo String?
+  fuelType       String?
+  isActive       Boolean     @default(true)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  profile Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  trips   TripLog[]
+
+  @@index([profileId, vehicleType])
+}
+
+model TripLog {
+  id             String    @id @default(cuid())
+  profileId      String
+  vehicleId      String?
+  startLocation  String
+  startLatitude  Decimal?  @db.Decimal(10, 7)
+  startLongitude Decimal?  @db.Decimal(10, 7)
+  endLocation    String
+  endLatitude    Decimal?  @db.Decimal(10, 7)
+  endLongitude   Decimal?  @db.Decimal(10, 7)
+  startedAt      DateTime
+  endedAt        DateTime?
+  distanceKm     Decimal?  @db.Decimal(10, 2)
+  expenseAmount  Decimal?  @db.Decimal(18, 2)
+  receiptId      String?
+  createdAt      DateTime  @default(now())
+
+  profile Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  vehicle Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  receipt Receipt? @relation(fields: [receiptId], references: [id], onDelete: SetNull)
+
+  @@index([profileId, startedAt])
+}
+
+model TravelSuggestion {
+  id                String      @id @default(cuid())
+  profileId         String
+  routeHash         String
+  suggestedMode     VehicleType
+  suggestedProvider String?
+  confidenceScore   Decimal     @db.Decimal(5, 2)
+  rationale         String?
+  generatedAt       DateTime    @default(now())
+
+  profile Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, routeHash, suggestedMode])
+  @@index([profileId, generatedAt])
+}
+
+/// Bill ingestion (handwritten/printed image and chat-text based)
+model BillCapture {
+  id            String         @id @default(cuid())
+  profileId     String
+  receiptId     String?
+  sourceType    BillSourceType
+  imageUrl      String?
+  rawText       String?
+  parsedPayload Json?
+  capturedAt    DateTime       @default(now())
+
+  profile Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  receipt Receipt? @relation(fields: [receiptId], references: [id], onDelete: SetNull)
+
+  @@index([profileId, capturedAt])
+}
+
+model AssistantSuggestion {
+  id              String         @id @default(cuid())
+  profileId       String
+  suggestionType  SuggestionType
+  title           String
+  message         String
+  metadata        Json?
+  confidenceScore Decimal?       @db.Decimal(5, 2)
+  createdAt       DateTime       @default(now())
+  dismissedAt     DateTime?
+
+  profile Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, suggestionType, createdAt])
 }
 
 enum UserStatus {
@@ -79,4 +432,138 @@ enum OtpChannel {
   PHONE
   EMAIL
   DEVICE
+}
+
+enum ProfileType {
+  INDIVIDUAL
+  FAMILY
+  COUPLE
+  ROOMMATES
+}
+
+enum DashboardWidgetType {
+  INCOME
+  EXPENSE
+  CHARITY
+  MONEY_LENT
+  MONEY_BORROWED
+  CASHFLOW
+  BUDGET
+  INVESTMENT
+  SUBSCRIPTION
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+enum AccountSubtype {
+  CASH
+  BANK
+  CARD
+  LOAN
+  RECEIVABLE
+  PAYABLE
+  INVESTMENT
+  INSURANCE
+}
+
+enum CategoryKind {
+  INCOME
+  EXPENSE
+  TRANSFER
+  BALANCE_SHEET
+}
+
+enum CategoryBucket {
+  ACTIVE_INCOME
+  PASSIVE_INCOME
+  GOVERNMENT_SOCIAL
+  INCOME_MISC
+
+  HOUSING
+  UTILITIES
+  FOOD_GROCERIES
+  TRANSPORTATION
+  HEALTH_WELLNESS
+  DEBT_OBLIGATIONS
+
+  ENTERTAINMENT
+  DINING_OUT
+  PERSONAL_CARE
+  TRAVEL
+  SHOPPING
+
+  SAVINGS
+  INVESTMENTS
+  PROTECTION
+
+  SUBSCRIPTIONS
+  SHARED_SPLIT
+  TAX_DEDUCTIBLE
+  INTERNAL_TRANSFERS
+
+  CHARITY
+  MONEY_LENT
+  MONEY_BORROWED
+  OTHER
+}
+
+enum EntrySource {
+  MANUAL
+  IMPORT
+  BILL_CAPTURE
+  CHAT
+  AI_AUTOMATION
+}
+
+enum EntryDirection {
+  DEBIT
+  CREDIT
+}
+
+enum BudgetPeriodType {
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+  CUSTOM
+}
+
+enum MerchantType {
+  STORE
+  ONLINE
+  SERVICE
+  TRANSPORT
+}
+
+enum BillSourceType {
+  IMAGE_HANDWRITTEN
+  IMAGE_PRINTED
+  TEXT_CHAT
+  FILE_IMPORT
+}
+
+enum VehicleType {
+  WALK
+  BIKE
+  AUTO
+  CAR
+  BUS
+  TRAIN
+  TAXI
+  OTHER
+}
+
+enum SuggestionType {
+  BUDGET
+  REORDER
+  TRAVEL
+  CASHFLOW
+  TAX
+  SUBSCRIPTION_LEAK
 }
