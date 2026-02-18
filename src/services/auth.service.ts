@@ -2,6 +2,7 @@ import { UserStatus } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { comparePin, hashPin } from '../lib/security.js'
 import { sendEmailOtp } from '../messaging/email/email.service.js'
+import { createAuthToken } from '../lib/token.js'
 import { sendOtp } from '../messaging/otp.service.js'
 import { createOtp, verifyOtp } from './otp.store.js'
 import { generateOtp } from './otp.service.js'
@@ -102,6 +103,7 @@ export async function login(phone: string, pin: string) {
       email: user.email,
       verifiedAt: user.verifiedAt
     },
+    token: createAuthToken(user.id),
     next: '/dashboard'
   }
 }
