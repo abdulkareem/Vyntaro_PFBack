@@ -3,6 +3,8 @@ import { z } from 'zod'
 import {
   login,
   registerStart,
+  resetPinComplete,
+  resetPinStart,
   setUserPin,
   verifyRegistrationOtp
 } from '../services/auth.service.js'
@@ -115,6 +117,50 @@ authRouter.post('/login', async (req, res) => {
 
   if (!result.ok) {
     return res.status(401).json(result)
+  }
+
+  return res.json(result)
+})
+
+/* ---------------- RESET PIN START ---------------- */
+
+authRouter.post('/reset-pin/start', async (req, res) => {
+  const schema = z.object({ phone: phoneSchema })
+
+  const parsed = schema.safeParse(req.body)
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() })
+  }
+
+  const phone = normalizePhone(parsed.data.phone)
+  const result = await resetPinStart(phone)
+
+  if (!result.ok) {
+    return res.status(400).json(result)
+  }
+
+  return res.json(result)
+})
+
+/* ---------------- RESET PIN COMPLETE ---------------- */
+
+authRouter.post('/reset-pin/complete', async (req, res) => {
+  const schema = z.object({
+    phone: phoneSchema,
+    otp: z.string().length(6),
+    pin: z.string().min(4).max(8)
+  })
+
+  const parsed = schema.safeParse(req.body)
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() })
+  }
+
+  const phone = normalizePhone(parsed.data.phone)
+  const result = await resetPinComplete(phone, parsed.data.otp, parsed.data.pin)
+
+  if (!result.ok) {
+    return res.status(400).json(result)
   }
 
   return res.json(result)

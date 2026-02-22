@@ -107,3 +107,44 @@ export async function login(phone: string, pin: string) {
     next: '/dashboard'
   }
 }
+
+export async function resetPinStart(phone: string) {
+  const user = await prisma.userAccount.findUnique({ where: { phone } })
+  if (!user?.verifiedAt) return { ok: false as const, reason: 'not_verified' as const }
+
+  const otp = generateOtp()
+  await createOtp(phone, otp, user.email ?? null, user.country ?? undefined, user.region ?? undefined)
+
+  await sendOtp(phone, otp)
+  if (user.email) {
+    sendEmailOtp(user.email, otp).catch(() => {})
+  }
+
+  return {
+    ok: true as const,
+    devOtp: process.env.NODE_ENV === 'production' ? undefined : { otp }
+  }
+}
+
+export async function resetPinComplete(phone: string, otp: string, pin: string) {
+  const user = await prisma.userAccount.findUnique({ where: { phone } })
+  if (!user?.verifiedAt) return { ok: false as const, reason: 'not_verified' as const }
+
+  try {
+    await verifyOtp(phone, otp)
+  } catch (error) {
+    return {
+      ok: false as const,
+      reason: error instanceof Error ? error.message : 'invalid'
+    }
+  }
+
+  const pinHash = await hashPin(pin)
+  await prisma.userPin.upsert({
+    where: { userId: user.id },
+    create: { userId: user.id, pinHash },
+    update: { pinHash }
+  })
+
+  return { ok: true as const }
+}
