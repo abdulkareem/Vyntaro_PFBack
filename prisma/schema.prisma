@@ -12,6 +12,8 @@ model UserAccount {
   id              String        @id @default(cuid())
   phone           String        @unique
   email           String?       @unique
+  role            UserRole      @default(USER)
+  pinSet          Boolean       @default(false)
   country         String?
   region          String?
   userStatus      UserStatus    @default(GHOST)
@@ -24,6 +26,12 @@ model UserAccount {
   userPin  UserPin?
   otps     VerificationCode[]
   profiles Profile[]
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
 }
 
 model UserDevice {

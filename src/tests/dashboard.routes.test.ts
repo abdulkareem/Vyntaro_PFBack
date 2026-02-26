@@ -33,3 +33,17 @@ test('dashboard endpoint validates month/year', async () => {
 
   await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
 })
+
+test('dashboard endpoint requires pin to be set', async () => {
+  const server = await createServer()
+  const address = server.address()
+  const port = typeof address === 'object' && address ? address.port : 0
+
+  const token = createAuthToken('test-user-id', false)
+  const response = await fetch(`http://127.0.0.1:${port}/api/dashboard/net-worth?month=1&year=2025`, {
+    headers: { Authorization: `Bearer ${token}` }
+  })
+  assert.equal(response.status, 403)
+
+  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+})

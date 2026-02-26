@@ -6,6 +6,8 @@ const TOKEN_TTL_SECONDS = Number(process.env.AUTH_TOKEN_TTL_SECONDS ?? 60 * 60 *
 type TokenPayload = {
   sub: string
   exp: number
+  pinSet: boolean
+  role: 'USER' | 'ADMIN' | 'SUPER_ADMIN'
 }
 
 function toBase64Url(value: string): string {
@@ -16,10 +18,12 @@ function sign(data: string): string {
   return crypto.createHmac('sha256', TOKEN_SECRET).update(data).digest('base64url')
 }
 
-export function createAuthToken(userId: string): string {
+export function createAuthToken(userId: string, pinSet = true, role: TokenPayload['role'] = 'USER'): string {
   const payload: TokenPayload = {
     sub: userId,
-    exp: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS
+    exp: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS,
+    pinSet,
+    role
   }
 
   const payloadEncoded = toBase64Url(JSON.stringify(payload))
@@ -27,7 +31,7 @@ export function createAuthToken(userId: string): string {
   return `${payloadEncoded}.${signature}`
 }
 
-export function verifyAuthToken(token: string): { userId: string } | null {
+export function verifyAuthToken(token: string): { userId: string; pinSet: boolean; role: TokenPayload['role'] } | null {
   const [payloadEncoded, signature] = token.split('.')
   if (!payloadEncoded || !signature) return null
 
@@ -42,7 +46,10 @@ export function verifyAuthToken(token: string): { userId: string } | null {
     if (!parsed.sub || !parsed.exp) return null
     if (parsed.exp < Math.floor(Date.now() / 1000)) return null
 
-    return { userId: parsed.sub }
+    if (typeof parsed.pinSet !== 'boolean') return null
+    if (!parsed.role) return null
+
+    return { userId: parsed.sub, pinSet: parsed.pinSet, role: parsed.role }
   } catch {
     return null
   }

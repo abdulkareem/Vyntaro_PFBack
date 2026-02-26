@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { requireAuth } from '../middleware/auth.middleware.js'
+import { requireAuthWithPin } from '../middleware/auth.middleware.js'
 import {
   calculateFinancialHealth,
   generateDashboardAlerts,
@@ -12,7 +12,7 @@ import {
 
 export const dashboardRouter = Router()
 
-dashboardRouter.use(requireAuth)
+dashboardRouter.use(requireAuthWithPin)
 
 const querySchema = z.object({
   month: z.coerce.number().int().min(1).max(12),
