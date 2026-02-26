@@ -3,6 +3,7 @@ import cors from 'cors'
 import express from 'express'
 import { authRouter } from './routes/auth.routes.js'
 import { dashboardRouter } from './routes/dashboard.routes.js'
+import { bootstrapAdminFromEnv } from './services/admin-bootstrap.service.js'
 
 export const app = express()
 
@@ -15,6 +16,10 @@ app.get('/health', (_req, res) => {
 
 app.use('/api/auth', authRouter)
 app.use('/api/dashboard', dashboardRouter)
+
+bootstrapAdminFromEnv().catch((error) => {
+  console.error('Admin bootstrap failed', error)
+})
 
 const isMainModule = process.argv[1] ? import.meta.url.endsWith(process.argv[1]) : false
 if (isMainModule) {
