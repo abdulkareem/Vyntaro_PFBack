@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
+import { normalizePhone, phoneSchema } from '../lib/phone.js'
 import {
   login,
   registerStart,
@@ -10,24 +11,6 @@ import {
 } from '../services/auth.service.js'
 
 export const authRouter = Router()
-
-/**
- * Normalize phone number:
- * - Accepts "+919876543210" or "919876543210"
- * - Stores only digits: "919876543210"
- */
-function normalizePhone(phone: string): string {
-  return phone.startsWith('+') ? phone.slice(1) : phone
-}
-
-/**
- * Shared phone schema:
- * - Allows optional "+"
- * - 7 to 15 digits (E.164 compatible)
- */
-const phoneSchema = z
-  .string()
-  .regex(/^\+?[0-9]{7,15}$/, 'Invalid phone number')
 
 /* ---------------- REGISTER START ---------------- */
 
