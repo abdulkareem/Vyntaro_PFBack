@@ -148,11 +148,17 @@ export async function setUserPin(phone: string, pin: string) {
   if (!user?.verifiedAt) return { ok: false as const, reason: 'not_verified' as const }
 
   const pinHash = await hashPin(pin)
-  await prisma.userPin.upsert({
+  await prisma.$transaction([
+    prisma.userPin.upsert({
     where: { userId: user.id },
     create: { userId: user.id, pinHash },
     update: { pinHash }
-  })
+    }),
+    prisma.userAccount.update({
+      where: { id: user.id },
+      data: { pinSet: true }
+    })
+  ])
 
   try {
     await prisma.userAccount.update({
@@ -222,11 +228,17 @@ export async function resetPinComplete(phone: string, otp: string, pin: string) 
   }
 
   const pinHash = await hashPin(pin)
-  await prisma.userPin.upsert({
+  await prisma.$transaction([
+    prisma.userPin.upsert({
     where: { userId: user.id },
     create: { userId: user.id, pinHash },
     update: { pinHash }
-  })
+    }),
+    prisma.userAccount.update({
+      where: { id: user.id },
+      data: { pinSet: true }
+    })
+  ])
 
   try {
     await prisma.userAccount.update({
