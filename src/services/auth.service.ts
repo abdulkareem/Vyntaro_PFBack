@@ -1,4 +1,4 @@
-import { UserStatus } from '@prisma/client'
+import { UserRole, UserStatus } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { comparePin, hashPin } from '../lib/security.js'
 import { sendEmailOtp } from '../messaging/email/email.service.js'
@@ -15,32 +15,45 @@ type RegisterInput = {
 }
 
 export async function registerStart(input: RegisterInput) {
-  const user = await prisma.userAccount.upsert({
-    where: { phone: input.phone },
-    create: {
+  const existingUser = await prisma.userAccount.findUnique({ where: { phone: input.phone } })
+  if (existingUser) {
+    return {
+      ok: true as const,
+      user: {
+        id: existingUser.id,
+        phone: existingUser.phone,
+        email: existingUser.email,
+        pinSet: existingUser.pinSet,
+        role: existingUser.role
+      },
+      next: existingUser.pinSet ? '/login' : '/set-pin'
+    }
+  }
+
+  const user = await prisma.userAccount.create({
+    data: {
       phone: input.phone,
       email: input.email,
       country: input.country,
-      region: input.region
-    },
-    update: {
-      email: input.email,
-      country: input.country,
-      region: input.region
+      region: input.region,
+      pinSet: false,
+      role: UserRole.USER,
+      verifiedAt: new Date(),
+      userStatus: UserStatus.ACTIVE
     }
   })
 
-  const otp = generateOtp()
-  await createOtp(input.phone, otp, input.email ?? null, input.country, input.region)
-
-  await sendOtp(input.phone, otp)
-  if (input.email) {
-    sendEmailOtp(input.email, otp).catch(() => {})
-  }
-
   return {
+    ok: true as const,
     userId: user.id,
-    devOtp: process.env.NODE_ENV === 'production' ? undefined : { otp }
+    user: {
+      id: user.id,
+      phone: user.phone,
+      email: user.email,
+      pinSet: user.pinSet,
+      role: user.role
+    },
+    next: '/set-pin'
   }
 }
 
@@ -79,21 +92,28 @@ export async function setUserPin(phone: string, pin: string) {
   if (!user?.verifiedAt) return { ok: false as const, reason: 'not_verified' as const }
 
   const pinHash = await hashPin(pin)
-  await prisma.userPin.upsert({
+  await prisma.$transaction([
+    prisma.userPin.upsert({
     where: { userId: user.id },
     create: { userId: user.id, pinHash },
     update: { pinHash }
-  })
+    }),
+    prisma.userAccount.update({
+      where: { id: user.id },
+      data: { pinSet: true }
+    })
+  ])
 
   return { ok: true as const }
 }
 
 export async function login(phone: string, pin: string) {
   const user = await prisma.userAccount.findUnique({ where: { phone }, include: { userPin: true } })
-  if (!user?.userPin) return { ok: false as const, reason: 'not_found' as const }
+  if (!user || !user.verifiedAt) return { ok: false as const, reason: 'invalid_credentials' as const }
+  if (!user.pinSet || !user.userPin) return { ok: false as const, reason: 'pin_not_set' as const }
 
   const valid = await comparePin(pin, user.userPin.pinHash)
-  if (!valid) return { ok: false as const, reason: 'invalid' as const }
+  if (!valid) return { ok: false as const, reason: 'invalid_credentials' as const }
 
   return {
     ok: true as const,
@@ -101,9 +121,11 @@ export async function login(phone: string, pin: string) {
       id: user.id,
       phone: user.phone,
       email: user.email,
-      verifiedAt: user.verifiedAt
+      verifiedAt: user.verifiedAt,
+      pinSet: user.pinSet,
+      role: user.role
     },
-    token: createAuthToken(user.id),
+    token: createAuthToken(user.id, user.pinSet, user.role),
     next: '/dashboard'
   }
 }
@@ -140,11 +162,17 @@ export async function resetPinComplete(phone: string, otp: string, pin: string) 
   }
 
   const pinHash = await hashPin(pin)
-  await prisma.userPin.upsert({
+  await prisma.$transaction([
+    prisma.userPin.upsert({
     where: { userId: user.id },
     create: { userId: user.id, pinHash },
     update: { pinHash }
-  })
+    }),
+    prisma.userAccount.update({
+      where: { id: user.id },
+      data: { pinSet: true }
+    })
+  ])
 
   return { ok: true as const }
 }
