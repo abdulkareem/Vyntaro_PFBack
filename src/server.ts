@@ -7,7 +7,31 @@ import { bootstrapAdminFromEnv } from './services/admin-bootstrap.service.js'
 
 export const app = express()
 
-app.use(cors({ origin: process.env.CORS_ORIGIN ?? '*' }))
+const configuredOrigins = (process.env.CORS_ORIGIN ?? '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+
+const fallbackDevOrigins = ['http://localhost:3000', 'http://localhost:5173']
+const allowedOrigins = new Set(
+  configuredOrigins.length
+    ? configuredOrigins
+    : process.env.NODE_ENV === 'production'
+      ? ['https://vyntaro-pf.pages.dev']
+      : fallbackDevOrigins
+)
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.has(origin)) {
+        return callback(null, true)
+      }
+
+      return callback(new Error(`CORS blocked for origin: ${origin}`))
+    }
+  })
+)
 app.use(express.json())
 
 app.get('/health', (_req, res) => {
