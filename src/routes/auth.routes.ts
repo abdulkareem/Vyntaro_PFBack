@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, type RequestHandler } from 'express'
 import { z } from 'zod'
 import { normalizePhone, phoneSchema } from '../lib/phone.js'
 import {
@@ -12,8 +12,6 @@ import {
 
 export const authRouter = Router()
 
-/* ---------------- REGISTER START ---------------- */
-
 const registerSchema = z.object({
   phone: phoneSchema,
   email: z.string().email().optional(),
@@ -21,169 +19,175 @@ const registerSchema = z.object({
   region: z.string().optional()
 })
 
-authRouter.post('/register/start', async (req, res) => {
-  const parsed = registerSchema.safeParse(req.body)
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.flatten() })
-  }
-
-  const data = {
-    ...parsed.data,
-    phone: normalizePhone(parsed.data.phone)
-  }
-
-  const result = await registerStart(data)
-  return res.json(result)
+const pinSchema = z.object({
+  phone: phoneSchema,
+  pin: z.string().min(4).max(8)
 })
 
-authRouter.post('/register', async (req, res) => {
-  const parsed = registerSchema.safeParse(req.body)
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.flatten() })
-  }
-
-  const data = {
-    ...parsed.data,
-    phone: normalizePhone(parsed.data.phone)
-  }
-
-  const result = await registerStart(data)
-  return res.json(result)
+const resetPinCompleteSchema = z.object({
+  phone: phoneSchema,
+  otp: z.string().length(6),
+  pin: z.string().min(4).max(8)
 })
 
-/* ---------------- REGISTER VERIFY OTP ---------------- */
-
-authRouter.post('/register/verify', async (req, res) => {
-  const schema = z.object({
-    phone: phoneSchema,
-    otp: z.string().length(6)
-  })
-
-  const parsed = schema.safeParse(req.body)
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.flatten() })
-  }
-
-  const phone = normalizePhone(parsed.data.phone)
-  const result = await verifyRegistrationOtp(phone, parsed.data.otp)
-
-  if (!result.ok) {
-    return res.status(400).json(result)
-  }
-
-  return res.json(result)
+const verifySchema = z.object({
+  phone: phoneSchema,
+  otp: z.string().length(6)
 })
 
-/* ---------------- SET PIN ---------------- */
+const parseError = (error: z.ZodError) => ({ error: error.flatten() })
 
-authRouter.post('/pin/set', async (req, res) => {
-  const schema = z.object({
-    phone: phoneSchema,
-    pin: z.string().min(4).max(8)
-  })
-
-  const parsed = schema.safeParse(req.body)
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.flatten() })
+function asyncHandler(handler: RequestHandler): RequestHandler {
+  return (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch(next)
   }
+}
 
-  const phone = normalizePhone(parsed.data.phone)
-  const result = await setUserPin(phone, parsed.data.pin)
+function statusForReason(reason?: string): number {
+  if (!reason) return 400
+  if (reason === 'pin_not_set') return 403
+  if (reason === 'invalid_credentials') return 401
+  if (reason === 'not_found') return 404
+  if (reason === 'OTP expired') return 410
+  if (reason === 'Too many attempts') return 429
+  if (reason === 'Invalid OTP') return 400
+  if (reason === 'not_verified') return 403
+  return 400
+}
 
-  if (!result.ok) {
-    return res.status(400).json(result)
-  }
-
-  return res.json(result)
-})
-
-authRouter.post('/set-pin', async (req, res) => {
-  const schema = z.object({
-    phone: phoneSchema,
-    pin: z.string().min(4).max(8)
-  })
-
-  const parsed = schema.safeParse(req.body)
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.flatten() })
-  }
-
-  const phone = normalizePhone(parsed.data.phone)
-  const result = await setUserPin(phone, parsed.data.pin)
-
-  if (!result.ok) {
-    return res.status(400).json(result)
-  }
-
-  return res.json(result)
-})
-
-/* ---------------- LOGIN ---------------- */
-
-authRouter.post('/login', async (req, res) => {
-  const schema = z.object({
-    phone: phoneSchema,
-    pin: z.string().min(4).max(8)
-  })
-
-  const parsed = schema.safeParse(req.body)
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.flatten() })
-  }
-
-  const phone = normalizePhone(parsed.data.phone)
-  const result = await login(phone, parsed.data.pin)
-
-  if (!result.ok) {
-    if (result.reason === 'pin_not_set') {
-      return res.status(403).json(result)
+authRouter.post(
+  '/register/start',
+  asyncHandler(async (req, res) => {
+    const parsed = registerSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return res.status(400).json(parseError(parsed.error))
     }
-    return res.status(401).json(result)
-  }
 
-  return res.json(result)
-})
+    const result = await registerStart({
+      ...parsed.data,
+      phone: normalizePhone(parsed.data.phone)
+    })
 
-/* ---------------- RESET PIN START ---------------- */
-
-authRouter.post('/reset-pin/start', async (req, res) => {
-  const schema = z.object({ phone: phoneSchema })
-
-  const parsed = schema.safeParse(req.body)
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.flatten() })
-  }
-
-  const phone = normalizePhone(parsed.data.phone)
-  const result = await resetPinStart(phone)
-
-  if (!result.ok) {
-    return res.status(400).json(result)
-  }
-
-  return res.json(result)
-})
-
-/* ---------------- RESET PIN COMPLETE ---------------- */
-
-authRouter.post('/reset-pin/complete', async (req, res) => {
-  const schema = z.object({
-    phone: phoneSchema,
-    otp: z.string().length(6),
-    pin: z.string().min(4).max(8)
+    return res.json(result)
   })
+)
 
-  const parsed = schema.safeParse(req.body)
-  if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.flatten() })
-  }
+authRouter.post(
+  '/register',
+  asyncHandler(async (req, res) => {
+    const parsed = registerSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return res.status(400).json(parseError(parsed.error))
+    }
 
-  const phone = normalizePhone(parsed.data.phone)
-  const result = await resetPinComplete(phone, parsed.data.otp, parsed.data.pin)
+    const result = await registerStart({
+      ...parsed.data,
+      phone: normalizePhone(parsed.data.phone)
+    })
 
-  if (!result.ok) {
-    return res.status(400).json(result)
-  }
+    return res.json(result)
+  })
+)
 
-  return res.json(result)
-})
+authRouter.post(
+  '/register/verify',
+  asyncHandler(async (req, res) => {
+    const parsed = verifySchema.safeParse(req.body)
+    if (!parsed.success) {
+      return res.status(400).json(parseError(parsed.error))
+    }
+
+    const result = await verifyRegistrationOtp(normalizePhone(parsed.data.phone), parsed.data.otp)
+    if (!result.ok) {
+      return res.status(statusForReason(result.reason)).json(result)
+    }
+
+    return res.json(result)
+  })
+)
+
+authRouter.post(
+  '/pin/set',
+  asyncHandler(async (req, res) => {
+    const parsed = pinSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return res.status(400).json(parseError(parsed.error))
+    }
+
+    const result = await setUserPin(normalizePhone(parsed.data.phone), parsed.data.pin)
+    if (!result.ok) {
+      return res.status(statusForReason(result.reason)).json(result)
+    }
+
+    return res.json(result)
+  })
+)
+
+authRouter.post(
+  '/set-pin',
+  asyncHandler(async (req, res) => {
+    const parsed = pinSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return res.status(400).json(parseError(parsed.error))
+    }
+
+    const result = await setUserPin(normalizePhone(parsed.data.phone), parsed.data.pin)
+    if (!result.ok) {
+      return res.status(statusForReason(result.reason)).json(result)
+    }
+
+    return res.json(result)
+  })
+)
+
+authRouter.post(
+  '/login',
+  asyncHandler(async (req, res) => {
+    const parsed = pinSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return res.status(400).json(parseError(parsed.error))
+    }
+
+    const result = await login(normalizePhone(parsed.data.phone), parsed.data.pin)
+    if (!result.ok) {
+      return res.status(statusForReason(result.reason)).json(result)
+    }
+
+    return res.json(result)
+  })
+)
+
+authRouter.post(
+  '/reset-pin/start',
+  asyncHandler(async (req, res) => {
+    const schema = z.object({ phone: phoneSchema })
+    const parsed = schema.safeParse(req.body)
+    if (!parsed.success) {
+      return res.status(400).json(parseError(parsed.error))
+    }
+
+    const result = await resetPinStart(normalizePhone(parsed.data.phone))
+    if (!result.ok) {
+      return res.status(statusForReason(result.reason)).json(result)
+    }
+
+    return res.json(result)
+  })
+)
+
+authRouter.post(
+  '/reset-pin/complete',
+  asyncHandler(async (req, res) => {
+    const parsed = resetPinCompleteSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return res.status(400).json(parseError(parsed.error))
+    }
+
+    const result = await resetPinComplete(normalizePhone(parsed.data.phone), parsed.data.otp, parsed.data.pin)
+    if (!result.ok) {
+      return res.status(statusForReason(result.reason)).json(result)
+    }
+
+    return res.json(result)
+  })
+)

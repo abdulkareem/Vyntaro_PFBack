@@ -64,6 +64,14 @@ async function findUserByPhoneCompat(phone: string, includePin = false): Promise
 export async function registerStart(input: RegisterInput) {
   const existingUser = await findUserByPhoneCompat(input.phone)
   if (existingUser) {
+    let devOtp: string | undefined
+    if (existingUser.userStatus !== UserStatus.ACTIVE) {
+      const otp = generateOtp()
+      await createOtp(input.phone, otp, existingUser.email, existingUser.country ?? undefined, existingUser.region ?? undefined)
+      await sendOtp(input.phone, otp, existingUser.email)
+      devOtp = otp
+    }
+
     return {
       ok: true as const,
       user: {
@@ -73,7 +81,15 @@ export async function registerStart(input: RegisterInput) {
         pinSet: existingUser.pinSet,
         role: existingUser.role
       },
-      next: existingUser.pinSet ? '/login' : '/set-pin'
+      next: existingUser.userStatus === UserStatus.ACTIVE
+        ? existingUser.pinSet
+          ? '/login'
+          : '/set-pin'
+        : '/verify-otp',
+      devOtp:
+        existingUser.userStatus === UserStatus.ACTIVE || process.env.NODE_ENV === 'production' || !devOtp
+          ? undefined
+          : { otp: devOtp }
     }
   }
 
@@ -86,7 +102,7 @@ export async function registerStart(input: RegisterInput) {
         referralCode: generateReferralCode(input.phone),
         pinSet: false,
         role: UserRole.USER,
-        userStatus: UserStatus.ACTIVE
+        userStatus: UserStatus.GHOST
       }
     })
   } catch (error) {
@@ -96,10 +112,14 @@ export async function registerStart(input: RegisterInput) {
         phone: input.phone,
         email: input.email,
         referralCode: generateReferralCode(input.phone),
-        userStatus: UserStatus.ACTIVE
+        userStatus: UserStatus.GHOST
       }
     })
   }
+
+  const otp = generateOtp()
+  await createOtp(input.phone, otp, input.email ?? null, input.country, input.region)
+  await sendOtp(input.phone, otp, input.email)
 
   return {
     ok: true as const,
@@ -111,7 +131,8 @@ export async function registerStart(input: RegisterInput) {
       pinSet: user.pinSet ?? false,
       role: user.role ?? UserRole.USER
     },
-    next: '/set-pin'
+    next: '/verify-otp',
+    devOtp: process.env.NODE_ENV === 'production' ? undefined : { otp }
   }
 }
 
