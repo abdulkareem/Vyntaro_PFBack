@@ -42,7 +42,8 @@ const verifyOtpSchema = identityBaseSchema.extend({
 
 const setPinSchema = z.object({
   pin: z.string(),
-  mode: z.enum(['register', 'reset'])
+  mode: z.enum(['register', 'reset']),
+  otpSessionId: z.string().min(1).optional()
 })
 
 const loginSchema = identityBaseSchema.extend({
@@ -61,6 +62,7 @@ function errorStatus(code: AuthErrorCode): number {
   if (code === 'USER_NOT_FOUND') return 404
   if (code === 'INVALID_PIN' || code === 'OTP_INVALID') return 400
   if (code === 'OTP_EXPIRED') return 410
+  if (code === 'OTP_SESSION_REQUIRED') return 403
   if (code === 'OTP_LIMIT_EXCEEDED') return 429
   if (code === 'STATE_VIOLATION') return 403
   return 400
@@ -130,16 +132,16 @@ const setPinHandler = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, code: 'INVALID_INPUT', message: 'Invalid set-pin payload' })
   }
 
-  const otpSessionId = req.header('x-otp-session-id')
+  const otpSessionId = parsed.data.otpSessionId ?? req.header('x-otp-session-id')
   if (!otpSessionId) {
     return res.status(403).json({
       success: false,
-      code: 'STATE_VIOLATION',
-      message: 'A verified OTP session is required to set a PIN'
+      code: 'OTP_SESSION_REQUIRED',
+      message: 'OTP verification is required before setting a PIN'
     })
   }
 
-  const result = await setUserPin({ ...parsed.data, otpSessionId })
+  const result = await setUserPin({ pin: parsed.data.pin, mode: parsed.data.mode, otpSessionId })
   if (!result.ok) {
     return res.status(errorStatus(result.code)).json({ success: false, code: result.code, message: result.message })
   }
