@@ -1,56 +1,45 @@
-# Backend API Contract (Production Ready)
+# Backend API Contract (Authentication State Machine)
 
 Base URL prefix: `/api`
 
-## Infrastructure
-
-| Endpoint | Method | Body | Success | Status codes |
-|---|---|---|---|---|
-| `/health` | `GET` | none | `{ "ok": true }` | `200` |
-
-## Auth
+## Auth endpoints
 
 All endpoints below are under `/api/auth`.
 
-| Endpoint | Method | Request body | Success response | Errors |
-|---|---|---|---|---|
-| `/identity/check` | `POST` | `{ phone }` | `{ ok, exists, verified, pinSet, next, user? }` | `400` validation |
-| `/register/start` | `POST` | `{ phone, email?, country?, region? }` | `{ ok, userId?, user, delivery?, next, devOtp? }` | `400` validation |
-| `/register` | `POST` | same as above | alias of `/register/start` | same |
-| `/otp/send` | `POST` | same as above | alias of `/register/start` | same |
-| `/register/verify` | `POST` | `{ phone, otp }` | `{ ok: true, user, next }` | `400` invalid OTP/validation, `404`, `410`, `429` |
-| `/otp/verify` | `POST` | `{ phone, otp }` | alias of `/register/verify` | same |
-| `/pin/set` | `POST` | `{ phone, pin }` | `{ ok: true }` | `400` validation, `403` |
-| `/set-pin` | `POST` | `{ phone, pin }` | alias of `/pin/set` | same |
-| `/login` | `POST` | `{ phone, pin }` | `{ ok: true, user, token, next }` | `400` validation, `401`, `403` |
-| `/reset-pin/start` | `POST` | `{ phone }` | `{ ok: true, delivery, devOtp? }` | `400`, `403` |
-| `/forgot-pin/start` | `POST` | `{ phone }` | alias of `/reset-pin/start` | same |
-| `/forgot-password/start` | `POST` | `{ phone }` | alias of `/reset-pin/start` | same |
-| `/reset-pin/complete` | `POST` | `{ phone, otp, pin }` | `{ ok: true }` | `400`, `403`, `410`, `429` |
-| `/forgot-pin/complete` | `POST` | `{ phone, otp, pin }` | alias of `/reset-pin/complete` | same |
-| `/forgot-password/complete` | `POST` | `{ phone, otp, pin }` | alias of `/reset-pin/complete` | same |
-
-## Dashboard
-
-All endpoints below are under `/api/dashboard` and require `Authorization: Bearer <token>`.
-
-| Endpoint | Method | Query | Success response |
+| Endpoint | Method | Request body | Success response |
 |---|---|---|---|
-| `/financial-health` | `GET` | `month`, `year` | Financial health payload |
-| `/health-score` | `GET` | `month`, `year` | alias of `/financial-health` |
-| `/net-worth` | `GET` | `month`, `year` | Net worth payload |
-| `/expense-breakdown` | `GET` | `month`, `year` | Category-wise expense payload |
-| `/alerts` | `GET` | `month`, `year` | Dashboard alerts payload |
-| `/prediction` | `GET` | `month`, `year` | Monthly prediction payload |
-| `/lending-summary` | `GET` | `month`, `year` | Lending summary payload |
+| `/register/start` | `POST` | `{ country?, phone?, email? }` | `{ success: true, next: "verify-otp", userId }` |
+| `/register/otp/verify` | `POST` | `{ phone?/email?, otp }` | `{ success: true, next: "set-pin", userId }` |
+| `/pin/set` | `POST` | `{ userId, pin, confirmPin }` | `{ success: true, next: "login" }` |
+| `/login` | `POST` | `{ phone?/email?, pin }` | `{ success: true, token }` |
+| `/pin/reset/start` | `POST` | `{ country?, phone?/email? }` | `{ success: true, next: "verify-otp", userId }` |
+| `/pin/reset/otp/verify` | `POST` | `{ phone?/email?, otp }` | `{ success: true, next: "set-pin", userId }` |
+| `/otp/resend` | `POST` | `{ phone?/email? }` | `{ success: true }` |
 
-Validation failures return `400`.
-Authentication failures return `401`/`403`.
+## Error contract
 
-## Global response rules
+All user mistakes return explicit structured errors:
 
-- `200` / `201` for success (this backend currently uses `200` for auth + dashboard actions).
-- `400` for validation and contract mismatch.
-- `401` / `403` for authentication/authorization and account state failures.
-- `404` only for missing routes.
-- `500` only for unexpected server faults.
+```json
+{
+  "success": false,
+  "code": "INVALID_OTP | OTP_EXPIRED | OTP_LIMIT_EXCEEDED | INVALID_PIN | USER_NOT_FOUND | ...",
+  "message": "Human readable error"
+}
+```
+
+## Authentication state machine
+
+States:
+- `IDENTITY_VERIFIED`
+- `OTP_VERIFIED`
+- `PIN_SET`
+- `ACTIVE`
+
+Transitions:
+1. Register start creates user at `IDENTITY_VERIFIED`.
+2. Register OTP verification moves user to `OTP_VERIFIED`.
+3. PIN setup moves user to `PIN_SET`.
+4. Successful login moves user to `ACTIVE`.
+
+Each transition is persisted in `AuthStateTransition`.
