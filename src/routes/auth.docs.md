@@ -2,10 +2,34 @@
 
 All auth endpoints are rooted at `/api/auth`.
 
-## `POST /api/auth/register` / `POST /api/auth/register/start`
-Creates a user shell (if needed), generates OTP, and sends it through configured channels.
+## Endpoint matrix
 
-Request body:
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/identity/check` | `POST` | Check whether phone identity exists, is verified, and whether PIN is set |
+| `/register/start` | `POST` | Start registration and OTP send |
+| `/register` | `POST` | Alias of `/register/start` |
+| `/otp/send` | `POST` | Alias of `/register/start` |
+| `/register/verify` | `POST` | Verify registration OTP |
+| `/otp/verify` | `POST` | Alias of `/register/verify` |
+| `/pin/set` | `POST` | Set/replace PIN |
+| `/set-pin` | `POST` | Alias of `/pin/set` |
+| `/login` | `POST` | Login and issue token |
+| `/reset-pin/start` | `POST` | Start PIN reset OTP flow |
+| `/forgot-pin/start` | `POST` | Alias of `/reset-pin/start` |
+| `/forgot-password/start` | `POST` | Alias of `/reset-pin/start` |
+| `/reset-pin/complete` | `POST` | Complete PIN reset with OTP |
+| `/forgot-pin/complete` | `POST` | Alias of `/reset-pin/complete` |
+| `/forgot-password/complete` | `POST` | Alias of `/reset-pin/complete` |
+
+## Request schemas
+
+### Phone only
+```json
+{ "phone": "+911234567890" }
+```
+
+### Registration/OTP send
 ```json
 {
   "phone": "+911234567890",
@@ -15,33 +39,7 @@ Request body:
 }
 ```
 
-Success (`200`):
-```json
-{
-  "ok": true,
-  "userId": "cuid",
-  "user": {
-    "id": "cuid",
-    "phone": "+911234567890",
-    "email": "optional@example.com",
-    "pinSet": false,
-    "role": "USER"
-  },
-  "next": "/verify-otp",
-  "devOtp": {
-    "otp": "123456"
-  }
-}
-```
-
-Notes:
-- `devOtp` is omitted in production.
-- If user already exists and is verified, `next` becomes `/login` or `/set-pin`.
-
-## `POST /api/auth/register/verify`
-Verifies OTP for registration.
-
-Request body:
+### OTP verify
 ```json
 {
   "phone": "+911234567890",
@@ -49,27 +47,7 @@ Request body:
 }
 ```
 
-Success (`200`):
-```json
-{
-  "ok": true,
-  "user": {
-    "id": "cuid",
-    "phone": "+911234567890",
-    "email": "optional@example.com"
-  },
-  "next": "/dashboard"
-}
-```
-
-Errors:
-- `400`: invalid payload / invalid OTP
-- `404`: user not found
-- `410`: OTP expired
-- `429`: too many attempts
-
-## `POST /api/auth/set-pin` / `POST /api/auth/pin/set`
-Request body:
+### Set PIN / Login
 ```json
 {
   "phone": "+911234567890",
@@ -77,70 +55,7 @@ Request body:
 }
 ```
 
-Success (`200`):
-```json
-{ "ok": true }
-```
-
-Error (`403`):
-```json
-{ "ok": false, "reason": "not_verified" }
-```
-
-## `POST /api/auth/login`
-Request body:
-```json
-{
-  "phone": "+911234567890",
-  "pin": "1234"
-}
-```
-
-Success (`200`):
-```json
-{
-  "ok": true,
-  "user": {
-    "id": "cuid",
-    "phone": "+911234567890",
-    "email": "optional@example.com",
-    "pinSet": true,
-    "role": "USER"
-  },
-  "token": "signed-token",
-  "next": "/dashboard"
-}
-```
-
-Errors:
-- `401`: `{ "ok": false, "reason": "invalid_credentials" }`
-- `403`: `{ "ok": false, "reason": "pin_not_set" }`
-
-## `POST /api/auth/reset-pin/start`
-Request body:
-```json
-{
-  "phone": "+911234567890"
-}
-```
-
-Success (`200`):
-```json
-{
-  "ok": true,
-  "devOtp": {
-    "otp": "123456"
-  }
-}
-```
-
-Error (`403`):
-```json
-{ "ok": false, "reason": "not_verified" }
-```
-
-## `POST /api/auth/reset-pin/complete`
-Request body:
+### Reset PIN complete
 ```json
 {
   "phone": "+911234567890",
@@ -149,13 +64,50 @@ Request body:
 }
 ```
 
-Success (`200`):
+## Response conventions
+
+### Success (`200`)
+All successful auth endpoints return:
+
 ```json
 { "ok": true }
 ```
 
-Errors:
-- `400`: invalid payload / invalid OTP
-- `403`: not verified
-- `410`: OTP expired
-- `429`: too many attempts
+and may include endpoint-specific fields (`user`, `token`, `next`, `delivery`, `devOtp`).
+
+### Validation failure (`400`)
+```json
+{
+  "ok": false,
+  "error": {
+    "formErrors": [],
+    "fieldErrors": { "phone": ["Invalid phone"] }
+  }
+}
+```
+
+### Business failures
+- `401` → `invalid_credentials`
+- `403` → `pin_not_set`, `not_verified`
+- `404` → `not_found`
+- `410` → `otp_expired`
+- `429` → `otp_attempt_limit_reached`
+
+Example:
+```json
+{ "ok": false, "reason": "invalid_otp" }
+```
+
+## Notes
+
+- OTP delivery metadata is explicit in responses:
+  ```json
+  {
+    "delivery": {
+      "sms": "sent",
+      "email": "sent | skipped | failed",
+      "whatsapp": "sent | skipped | failed"
+    }
+  }
+  ```
+- `devOtp` is only present in non-production environments.

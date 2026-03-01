@@ -41,10 +41,13 @@ app.get('/health', (_req, res) => {
 app.use('/api/auth', authRouter)
 app.use('/api/dashboard', dashboardRouter)
 
+app.use((_req, res) => {
+  return res.status(404).json({ ok: false, error: 'route_not_found' })
+})
+
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Unhandled request error', error)
-  const message = error instanceof Error ? error.message : 'Internal server error'
-  return res.status(500).json({ ok: false, error: 'internal_server_error', message })
+  return res.status(500).json({ ok: false, error: 'internal_server_error' })
 })
 
 bootstrapAdminFromEnv().catch((error) => {
