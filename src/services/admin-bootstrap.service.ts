@@ -6,6 +6,12 @@ function envEnabled(value: string | undefined): boolean {
   return value === '1' || value?.toLowerCase() === 'true'
 }
 
+function generateAdminReferralCode(phone: string): string {
+  const digits = phone.replace(/\D/g, '').slice(-6) || 'ADMIN'
+  const suffix = Math.random().toString(36).slice(2, 8).toUpperCase()
+  return `${digits}${suffix}`
+}
+
 export async function bootstrapAdminFromEnv() {
   if (!envEnabled(process.env.ADMIN_BOOTSTRAP_ENABLED)) return
 
@@ -25,13 +31,12 @@ export async function bootstrapAdminFromEnv() {
         where: { phone },
         create: {
           phone,
-          verifiedAt: new Date(),
+          referralCode: generateAdminReferralCode(phone),
           userStatus: UserStatus.ACTIVE,
           role: UserRole.SUPER_ADMIN,
           pinSet: true
         },
         update: {
-          verifiedAt: new Date(),
           userStatus: UserStatus.ACTIVE,
           role: UserRole.SUPER_ADMIN,
           pinSet: true

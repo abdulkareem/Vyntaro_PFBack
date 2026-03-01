@@ -29,19 +29,9 @@ function toNumber(value: Prisma.Decimal | null | undefined): number {
   return Number(value ?? 0)
 }
 
-async function getActiveProfileId(userId: string): Promise<string | null> {
-  const profile = await prisma.profile.findFirst({
-    where: { userId, isActive: true },
-    orderBy: { createdAt: 'asc' },
-    select: { id: true }
-  })
-
-  return profile?.id ?? null
-}
-
-async function getAccountBalancesByType(profileId: string, upToDate: Date) {
+async function getAccountBalancesByType(userId: string, upToDate: Date) {
   const accounts = await prisma.financialAccount.findMany({
-    where: { profileId, isArchived: false },
+    where: { userId },
     select: {
       id: true,
       accountType: true,
@@ -84,16 +74,13 @@ export async function getMonthlyIncomeExpense(
   month: number,
   year: number
 ): Promise<MonthlyIncomeExpense> {
-  const profileId = await getActiveProfileId(userId)
-  if (!profileId) return { income: 0, expense: 0 }
-
   const start = startOfMonth(year, month)
   const end = endOfMonth(year, month)
 
   const byType = await prisma.journalLine.groupBy({
     by: ['accountId'],
     where: {
-      journalEntry: { profileId, transactionDate: { gte: start, lte: end } }
+      journalEntry: { userId, transactionDate: { gte: start, lte: end } }
     },
     _sum: { amount: true }
   })
@@ -123,31 +110,22 @@ export async function getLendingSummary(
   month: number,
   year: number
 ): Promise<LendingSummaryResponse> {
-  const profileId = await getActiveProfileId(userId)
-  if (!profileId) {
-    return { totalLent: 0, totalLoan: 0, breakdown: [], agingBuckets: emptyAgingBuckets() }
-  }
-
-  const end = endOfMonth(year, month)
   const records = await prisma.lendingRecord.findMany({
     where: {
-      profileId,
-      createdAt: { lte: end },
+      userId,
       status: { in: [LendingStatus.OPEN, LendingStatus.WRITTEN_OFF] }
     },
-    orderBy: [{ dueDate: 'asc' }, { createdAt: 'asc' }]
+    orderBy: { person: 'asc' }
   })
 
-  const now = new Date()
   const breakdown = records.map((record) => {
     const amount = toNumber(record.currentBalance)
-    const overdue = Boolean(record.dueDate && record.dueDate.getTime() < now.getTime() && amount > 0)
+    const overdue = false
     return {
       person: record.person,
       amount,
       kind: (record.kind === LendingKind.LENT ? 'lent' : 'loan') as 'lent' | 'loan',
-      overdue,
-      dueDate: record.dueDate?.toISOString()
+      overdue
     }
   })
 
@@ -160,12 +138,11 @@ export async function getLendingSummary(
 
   const agingBuckets = emptyAgingBuckets()
   for (const record of records) {
-    if (!record.dueDate || record.kind !== LendingKind.LOAN) continue
+    if (record.kind !== LendingKind.LOAN) continue
     const amount = toNumber(record.currentBalance)
     if (amount <= 0) continue
 
-    const daysOverdue = Math.floor((now.getTime() - record.dueDate.getTime()) / (1000 * 60 * 60 * 24))
-    const bucket = getAgingBucket(daysOverdue)
+    const bucket = getAgingBucket(0)
     const target = agingBuckets.find((entry) => entry.bucket === bucket)
     if (target) {
       target.count += 1
@@ -192,23 +169,8 @@ export async function calculateFinancialHealth(
 ): Promise<FinancialHealthResponse> {
   const { income, expense } = await getMonthlyIncomeExpense(userId, month, year)
   const lending = await getLendingSummary(userId, month, year)
-  const profileId = await getActiveProfileId(userId)
 
-  let budgetUtilization = 0
-  if (profileId) {
-    const start = startOfMonth(year, month)
-    const end = endOfMonth(year, month)
-
-    const budgets = await prisma.budgetPlan.aggregate({
-      where: { profileId, periodStart: { lte: end }, periodEnd: { gte: start } },
-      _sum: { amount: true }
-    })
-
-    const budgetTotal = toNumber(budgets._sum.amount)
-    if (budgetTotal > 0) {
-      budgetUtilization = expense / budgetTotal
-    }
-  }
+  const budgetUtilization = 0
 
   return computeFinancialHealthScore({
     income,
@@ -223,11 +185,8 @@ export async function getNetWorthSummary(
   month: number,
   year: number
 ): Promise<NetWorthResponse> {
-  const profileId = await getActiveProfileId(userId)
-  if (!profileId) return { netWorth: 0, savingsThisMonth: 0 }
-
   const monthEnd = endOfMonth(year, month)
-  const balances = await getAccountBalancesByType(profileId, monthEnd)
+  const balances = await getAccountBalancesByType(userId, monthEnd)
   const { income, expense } = await getMonthlyIncomeExpense(userId, month, year)
 
   return {
@@ -241,16 +200,13 @@ export async function getExpenseBreakdown(
   month: number,
   year: number
 ): Promise<ExpenseBreakdownItem[]> {
-  const profileId = await getActiveProfileId(userId)
-  if (!profileId) return []
-
   const start = startOfMonth(year, month)
   const end = endOfMonth(year, month)
 
   const grouped = await prisma.journalLine.groupBy({
     by: ['categoryId'],
     where: {
-      journalEntry: { profileId, transactionDate: { gte: start, lte: end } },
+      journalEntry: { userId, transactionDate: { gte: start, lte: end } },
       account: { accountType: AccountType.EXPENSE },
       categoryId: { not: null }
     },
@@ -279,20 +235,13 @@ export async function generateDashboardAlerts(
   month: number,
   year: number
 ): Promise<DashboardAlert[]> {
-  const profileId = await getActiveProfileId(userId)
-  if (!profileId) return []
-
   const alerts: DashboardAlert[] = []
   const start = startOfMonth(year, month)
   const end = endOfMonth(year, month)
   const { income, expense } = await getMonthlyIncomeExpense(userId, month, year)
 
-  const budgets = await prisma.budgetPlan.aggregate({
-    where: { profileId, periodStart: { lte: end }, periodEnd: { gte: start } },
-    _sum: { amount: true }
-  })
-  const budgetTotal = toNumber(budgets._sum.amount)
-  if (budgetTotal > 0 && expense / budgetTotal > 0.8) {
+  const budgetPlansCount = await prisma.budgetPlan.count({ where: { userId } })
+  if (budgetPlansCount > 0 && income > 0 && expense / income > 0.8) {
     alerts.push({ type: 'warning', message: 'Budget usage is above 80% this month.' })
   }
 
@@ -304,7 +253,7 @@ export async function generateDashboardAlerts(
   }
 
   const charityCategory = await prisma.category.findFirst({
-    where: { profileId, bucket: 'CHARITY' },
+    where: { userId, bucket: 'CHARITY' },
     select: { id: true }
   })
   if (charityCategory) {
@@ -312,7 +261,7 @@ export async function generateDashboardAlerts(
       where: {
         categoryId: charityCategory.id,
         account: { accountType: AccountType.EXPENSE },
-        journalEntry: { profileId, transactionDate: { gte: start, lte: end } }
+        journalEntry: { userId, transactionDate: { gte: start, lte: end } }
       },
       _sum: { amount: true }
     })
@@ -322,7 +271,7 @@ export async function generateDashboardAlerts(
       where: {
         categoryId: charityCategory.id,
         account: { accountType: AccountType.EXPENSE },
-        journalEntry: { profileId, transactionDate: { gte: trailingStart, lt: start } }
+        journalEntry: { userId, transactionDate: { gte: trailingStart, lt: start } }
       },
       _sum: { amount: true }
     })
@@ -335,11 +284,10 @@ export async function generateDashboardAlerts(
   }
 
   const overdueLoanCount = await prisma.lendingRecord.count({
-    where: {
-      profileId,
+      where: {
+      userId,
       kind: LendingKind.LOAN,
       status: LendingStatus.OPEN,
-      dueDate: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
       currentBalance: { gt: new Prisma.Decimal(0) }
     }
   })
@@ -359,9 +307,6 @@ export async function getMonthlyPrediction(
   month: number,
   year: number
 ): Promise<PredictionResponse> {
-  const profileId = await getActiveProfileId(userId)
-  if (!profileId) return { projectedBalance: 0 }
-
   const now = new Date()
   const selectedCurrentMonth = now.getUTCFullYear() === year && now.getUTCMonth() + 1 === month
   const start = startOfMonth(year, month)
@@ -372,7 +317,7 @@ export async function getMonthlyPrediction(
     where: {
       account: { accountType: AccountType.EXPENSE },
       journalEntry: {
-        profileId,
+        userId,
         transactionDate: { gte: start, lte: selectedCurrentMonth ? now : end }
       }
     },
@@ -380,10 +325,10 @@ export async function getMonthlyPrediction(
   })
 
   const elapsedDays = selectedCurrentMonth ? Math.max(now.getUTCDate(), 1) : end.getUTCDate()
-  const avgDailyExpense = toNumber(expenseAgg._sum.amount) / elapsedDays
+  const avgDailyExpense = toNumber(expenseAgg._sum?.amount) / elapsedDays
   const daysRemaining = selectedCurrentMonth ? end.getUTCDate() - now.getUTCDate() : 0
 
-  const balances = await getAccountBalancesByType(profileId, predictionReference)
+  const balances = await getAccountBalancesByType(userId, predictionReference)
   const currentBalance = balances.asset - balances.liability
 
   return {
