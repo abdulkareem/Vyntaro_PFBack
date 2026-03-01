@@ -1,16 +1,30 @@
-import { Prisma, UserRole, UserStatus } from '@prisma/client'
+import { AuthState, OtpPurpose, Prisma, UserRole } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { comparePin, hashPin } from '../lib/security.js'
 import { createAuthToken } from '../lib/token.js'
 import { sendOtp } from '../messaging/otp.service.js'
-import { createOtp, verifyOtp } from './otp.store.js'
-import { generateOtp } from './otp.service.js'
+import { hashOtp } from './otp.service.js'
 
-type RegisterInput = {
-  phone?: string
-  email?: string
-  country?: string
-  region?: string
+const OTP_EXPIRY_MINUTES = 5
+const OTP_MAX_ATTEMPTS = 3
+const RESET_SESSION_MINUTES = 10
+
+export type AuthErrorCode =
+  | 'INVALID_INPUT'
+  | 'USER_EXISTS'
+  | 'USER_NOT_FOUND'
+  | 'INVALID_OTP'
+  | 'OTP_EXPIRED'
+  | 'OTP_LIMIT_EXCEEDED'
+  | 'INVALID_PIN'
+  | 'PIN_MISMATCH'
+  | 'PIN_FORMAT_INVALID'
+  | 'STATE_VIOLATION'
+
+export type ServiceError = { ok: false; code: AuthErrorCode; message: string }
+
+function error(code: AuthErrorCode, message: string): ServiceError {
+  return { ok: false, code, message }
 }
 
 type IdentityInput = {
@@ -18,16 +32,21 @@ type IdentityInput = {
   email?: string
 }
 
-type CompatUser = {
-  id: string
-  phone: string
-  email: string | null
-  country?: string | null
-  region?: string | null
-  userStatus: UserStatus
-  role?: UserRole
-  pinSet?: boolean
-  userPin?: { pinHash: string } | null
+type RegisterInput = IdentityInput & {
+}
+
+type SetPinInput = {
+  userId: string
+  pin: string
+  confirmPin: string
+}
+
+type OtpIdentityInput = IdentityInput & {
+  otp: string
+}
+
+function normalizeEmail(email?: string): string | undefined {
+  return email?.trim().toLowerCase()
 }
 
 function generateReferralCode(phone: string): string {
@@ -36,368 +55,255 @@ function generateReferralCode(phone: string): string {
   return `${digits}${suffix}`
 }
 
-function isMissingColumnError(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2022'
+function generateOtp(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString()
 }
 
-function normalizeOtpFailure(error: unknown): 'otp_expired' | 'otp_attempt_limit_reached' | 'invalid_otp' {
-  const message = error instanceof Error ? error.message : 'invalid'
-  if (message === 'OTP expired') return 'otp_expired'
-  if (message === 'Too many attempts') return 'otp_attempt_limit_reached'
-  return 'invalid_otp'
+function otpExpiryDate() {
+  return new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000)
 }
 
-function normalizeEmail(email?: string): string | undefined {
-  return email?.trim().toLowerCase()
+function resetSessionExpiryDate() {
+  return new Date(Date.now() + RESET_SESSION_MINUTES * 60 * 1000)
 }
 
-function getIdentityType(input: IdentityInput): 'phone' | 'email' | null {
-  if (input.phone) return 'phone'
-  if (input.email) return 'email'
-  return null
+function validatePin(pin: string): boolean {
+  return /^\d{4}$/.test(pin)
 }
 
-async function findUserByIdentity(input: IdentityInput, includePin = false): Promise<CompatUser | null> {
+async function findUserByIdentity(input: IdentityInput) {
   if (input.phone) {
-    return findUserByPhoneCompat(input.phone, includePin)
+    return prisma.userAccount.findUnique({ where: { phone: input.phone } })
   }
 
   if (!input.email) return null
-
-  try {
-    return await prisma.userAccount.findUnique({
-      where: { email: normalizeEmail(input.email) },
-      include: includePin ? { userPin: true } : undefined
-    })
-  } catch (error) {
-    if (!isMissingColumnError(error)) throw error
-
-    const fallbackUser = await prisma.userAccount.findUnique({
-      where: { email: normalizeEmail(input.email) },
-      select: {
-        id: true,
-        phone: true,
-        email: true,
-        userStatus: true,
-        userPin: includePin ? { select: { pinHash: true } } : false
-      }
-    })
-
-    if (!fallbackUser) return null
-    return { ...fallbackUser, role: UserRole.USER, pinSet: Boolean(fallbackUser.userPin) }
-  }
+  return prisma.userAccount.findUnique({ where: { email: normalizeEmail(input.email) } })
 }
 
-function normalizeUniqueConstraintError(error: unknown): 'phone' | 'email' | null {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') return null
-  const target = Array.isArray(error.meta?.target) ? error.meta.target.join(',') : String(error.meta?.target ?? '')
-  if (target.includes('phone')) return 'phone'
-  if (target.includes('email')) return 'email'
-  return null
-}
+async function transitionState(userId: string, toState: AuthState, reason: string) {
+  const current = await prisma.userAccount.findUnique({ where: { id: userId }, select: { authState: true } })
+  if (!current) return
 
-async function findUserByPhoneCompat(phone: string, includePin = false): Promise<CompatUser | null> {
-  try {
-    return await prisma.userAccount.findUnique({
-      where: { phone },
-      include: includePin ? { userPin: true } : undefined
-    })
-  } catch (error) {
-    if (!isMissingColumnError(error)) throw error
-
-    const fallbackUser = await prisma.userAccount.findUnique({
-      where: { phone },
-      select: {
-        id: true,
-        phone: true,
-        email: true,
-        userStatus: true,
-        userPin: includePin ? { select: { pinHash: true } } : false
+  await prisma.$transaction([
+    prisma.userAccount.update({ where: { id: userId }, data: { authState: toState } }),
+    prisma.authStateTransition.create({
+      data: {
+        userId,
+        fromState: current.authState,
+        toState,
+        reason
       }
     })
+  ])
+}
 
-    if (!fallbackUser) return null
-    return { ...fallbackUser, role: UserRole.USER, pinSet: Boolean(fallbackUser.userPin) }
+async function createOtpForPurpose(userId: string, otp: string, purpose: OtpPurpose) {
+  await prisma.verificationCode.deleteMany({ where: { userId, purpose, consumedAt: null } })
+  await prisma.verificationCode.create({
+    data: {
+      userId,
+      purpose,
+      channel: 'PHONE',
+      codeHash: hashOtp(otp),
+      expiresAt: otpExpiryDate(),
+      attempts: 0,
+      maxAttempts: OTP_MAX_ATTEMPTS,
+      resendCount: 0
+    }
+  })
+}
+
+async function verifyOtpForPurpose(userId: string, otp: string, purpose: OtpPurpose, consume = true) {
+  const code = await prisma.verificationCode.findFirst({
+    where: { userId, purpose, consumedAt: null },
+    orderBy: { createdAt: 'desc' }
+  })
+
+  if (!code) return error('OTP_EXPIRED', 'OTP has expired or is not available')
+  if (code.expiresAt < new Date()) return error('OTP_EXPIRED', 'OTP has expired')
+
+  if (code.attempts >= code.maxAttempts) {
+    return error('OTP_LIMIT_EXCEEDED', 'OTP attempt limit exceeded')
   }
+
+  if (hashOtp(otp) !== code.codeHash) {
+    const attempts = code.attempts + 1
+    await prisma.verificationCode.update({ where: { id: code.id }, data: { attempts } })
+    if (attempts >= code.maxAttempts) {
+      return error('OTP_LIMIT_EXCEEDED', 'OTP attempt limit exceeded')
+    }
+
+    return error('INVALID_OTP', 'Invalid OTP')
+  }
+
+  if (consume) {
+    await prisma.verificationCode.update({ where: { id: code.id }, data: { consumedAt: new Date() } })
+  }
+
+  return { ok: true as const }
 }
 
 export async function registerStart(input: RegisterInput) {
   if (!input.phone && !input.email) {
-    return { ok: false as const, reason: 'invalid_input' as const, field: 'identity' as const }
+    return error('INVALID_INPUT', 'Either phone or email is required')
   }
 
-  const existingUser = await findUserByIdentity({ phone: input.phone, email: input.email })
+  const existingUser = await findUserByIdentity(input)
   if (existingUser) {
-    let devOtp: string | undefined
-    if (existingUser.userStatus !== UserStatus.ACTIVE) {
-      const otp = generateOtp()
-      await createOtp(existingUser.phone, otp, existingUser.email, existingUser.country ?? undefined, existingUser.region ?? undefined)
-      const delivery = await sendOtp(existingUser.phone, otp, existingUser.email)
-      devOtp = otp
-
-      return {
-        ok: true as const,
-        user: {
-          id: existingUser.id,
-          phone: existingUser.phone,
-          email: existingUser.email,
-          pinSet: existingUser.pinSet,
-          role: existingUser.role
-        },
-        delivery,
-        next: '/verify-otp',
-        devOtp: process.env.NODE_ENV === 'production' || !devOtp ? undefined : { otp: devOtp }
-      }
-    }
-
-    return {
-      ok: true as const,
-      user: {
-        id: existingUser.id,
-        phone: existingUser.phone,
-        email: existingUser.email,
-        pinSet: existingUser.pinSet,
-        role: existingUser.role
-      },
-      next: existingUser.pinSet ? '/login' : '/set-pin'
-    }
+    return error('USER_EXISTS', 'User already exists')
   }
 
   if (!input.phone) {
-    return { ok: false as const, reason: 'invalid_input' as const, field: 'phone' as const }
+    return error('INVALID_INPUT', 'Phone is required')
   }
 
-  let user: CompatUser
-  try {
-    user = await prisma.userAccount.create({
-      data: {
-        phone: input.phone,
-        email: normalizeEmail(input.email),
-        referralCode: generateReferralCode(input.phone),
-        pinSet: false,
-        role: UserRole.USER,
-        userStatus: UserStatus.GHOST
-      }
-    })
-  } catch (error) {
-    const conflictingField = normalizeUniqueConstraintError(error)
-    if (conflictingField) {
-      return { ok: false as const, reason: 'user_exists' as const, field: conflictingField }
+  const user = await prisma.userAccount.create({
+    data: {
+      phone: input.phone,
+      email: normalizeEmail(input.email),
+      referralCode: generateReferralCode(input.phone),
+      pinSet: false,
+      role: UserRole.USER,
+      authState: AuthState.IDENTITY_VERIFIED,
+      pinResetAllowed: false
     }
-
-    if (!isMissingColumnError(error)) throw error
-    user = await prisma.userAccount.create({
-      data: {
-        phone: input.phone,
-        email: normalizeEmail(input.email),
-        referralCode: generateReferralCode(input.phone),
-        userStatus: UserStatus.GHOST
-      }
-    })
-  }
-
-  const otp = generateOtp()
-  await createOtp(input.phone, otp, normalizeEmail(input.email) ?? null, input.country, input.region)
-  const delivery = await sendOtp(input.phone, otp, normalizeEmail(input.email))
-
-  return {
-    ok: true as const,
-    userId: user.id,
-    user: {
-      id: user.id,
-      phone: user.phone,
-      email: user.email,
-      pinSet: user.pinSet ?? false,
-      role: user.role ?? UserRole.USER
-    },
-    delivery,
-    next: '/verify-otp',
-    devOtp: process.env.NODE_ENV === 'production' ? undefined : { otp }
-  }
-}
-
-export async function verifyRegistrationOtp(phone: string, otp: string) {
-  const user = await findUserByPhoneCompat(phone)
-  if (!user) return { ok: false as const, reason: 'not_found' as const }
-
-  try {
-    await verifyOtp(phone, otp)
-  } catch (error) {
-    return { ok: false as const, reason: normalizeOtpFailure(error) }
-  }
-
-  const updatedUser = await prisma.userAccount.update({
-    where: { id: user.id },
-    data: { userStatus: UserStatus.ACTIVE }
   })
 
-  return {
-    ok: true as const,
-    user: {
-      id: updatedUser.id,
-      phone: updatedUser.phone,
-      email: updatedUser.email
-    },
-    next: '/dashboard'
-  }
-}
-
-export async function setUserPin(phone: string, pin: string) {
-  const user = await prisma.userAccount.findUnique({ where: { phone } })
-  if (!user || user.userStatus !== UserStatus.ACTIVE) {
-    return { ok: false as const, reason: 'not_verified' as const }
-  }
-
-  const pinHash = await hashPin(pin)
-  await prisma.$transaction([
-    prisma.userPin.upsert({
-    where: { userId: user.id },
-    create: { userId: user.id, pinHash },
-    update: { pinHash }
-    }),
-    prisma.userAccount.update({
-      where: { id: user.id },
-      data: { pinSet: true }
-    })
-  ])
-
-  return { ok: true as const }
-}
-
-export async function login(phone: string, pin: string) {
-  const user = await findUserByPhoneCompat(phone, true)
-  if (!user || user.userStatus !== UserStatus.ACTIVE) {
-    return { ok: false as const, reason: 'invalid_credentials' as const }
-  }
-  const pinSet = user.pinSet ?? Boolean(user.userPin)
-  if (!pinSet || !user.userPin) return { ok: false as const, reason: 'pin_not_set' as const }
-
-  const valid = await comparePin(pin, user.userPin.pinHash)
-  if (!valid) return { ok: false as const, reason: 'invalid_credentials' as const }
-
-  return {
-    ok: true as const,
-    user: {
-      id: user.id,
-      phone: user.phone,
-      email: user.email,
-      pinSet,
-      role: user.role ?? UserRole.USER
-    },
-    token: createAuthToken(user.id, pinSet, user.role ?? UserRole.USER),
-    next: '/dashboard'
-  }
-}
-
-export async function resetPinStart(phone: string) {
-  const user = await findUserByIdentity({ phone })
-  if (!user || user.userStatus !== UserStatus.ACTIVE) {
-    return { ok: false as const, reason: 'not_found' as const }
-  }
-
   const otp = generateOtp()
-  await createOtp(phone, otp, user.email ?? null, user.country ?? undefined, user.region ?? undefined)
-
-  const delivery = await sendOtp(phone, otp, user.email)
+  await createOtpForPurpose(user.id, otp, OtpPurpose.REGISTER)
+  const delivery = await sendOtp(user.phone, otp, user.email)
 
   return {
     ok: true as const,
+    success: true as const,
+    next: 'verify-otp' as const,
+    userId: user.id,
     delivery,
-    next: '/verify-otp',
     devOtp: process.env.NODE_ENV === 'production' ? undefined : { otp }
   }
 }
 
-export async function resetPinStartByIdentity(input: IdentityInput) {
-  if (!input.phone && !input.email) {
-    return { ok: false as const, reason: 'invalid_input' as const, field: 'identity' as const }
-  }
-
+export async function verifyRegistrationOtp(input: OtpIdentityInput) {
   const user = await findUserByIdentity(input)
-  if (!user || user.userStatus !== UserStatus.ACTIVE) {
-    return { ok: false as const, reason: 'not_found' as const }
-  }
+  if (!user) return error('USER_NOT_FOUND', 'User not found')
 
-  return resetPinStart(user.phone)
+  const verification = await verifyOtpForPurpose(user.id, input.otp, OtpPurpose.REGISTER)
+  if (!verification.ok) return verification
+
+  await transitionState(user.id, AuthState.OTP_VERIFIED, 'register_otp_verified')
+
+  return { ok: true as const, success: true as const, next: 'set-pin' as const, userId: user.id }
 }
 
+export async function setUserPin(input: SetPinInput) {
+  if (!validatePin(input.pin)) return error('PIN_FORMAT_INVALID', 'PIN must be exactly 4 digits')
+  if (input.pin !== input.confirmPin) return error('PIN_MISMATCH', 'PIN and confirmPin must match')
 
-export async function verifyResetPinOtp(phone: string, otp: string) {
-  const user = await findUserByPhoneCompat(phone)
-  if (!user || user.userStatus !== UserStatus.ACTIVE) {
-    return { ok: false as const, reason: 'not_found' as const }
+  const user = await prisma.userAccount.findUnique({ where: { id: input.userId } })
+  if (!user) return error('USER_NOT_FOUND', 'User not found')
+
+  const canSetViaRegistration = user.authState === AuthState.OTP_VERIFIED
+  const canSetViaReset = user.pinResetAllowed && !!user.pinResetAllowedUntil && user.pinResetAllowedUntil > new Date()
+
+  if (!canSetViaRegistration && !canSetViaReset) {
+    return error('STATE_VIOLATION', 'Current state does not allow PIN setup')
   }
 
-  try {
-    await verifyOtp(phone, otp, false)
-  } catch (error) {
-    return { ok: false as const, reason: normalizeOtpFailure(error) }
-  }
-
-  return { ok: true as const, next: '/pin/reset/complete' }
-}
-
-export async function resetPinComplete(phone: string, otp: string, pin: string) {
-  const user = await findUserByPhoneCompat(phone)
-  if (!user || user.userStatus !== UserStatus.ACTIVE) {
-    return { ok: false as const, reason: 'not_verified' as const }
-  }
-
-  try {
-    await verifyOtp(phone, otp)
-  } catch (error) {
-    return { ok: false as const, reason: normalizeOtpFailure(error) }
-  }
-
-  const pinHash = await hashPin(pin)
+  const pinHash = await hashPin(input.pin)
   await prisma.$transaction([
     prisma.userPin.upsert({
-    where: { userId: user.id },
-    create: { userId: user.id, pinHash },
-    update: { pinHash }
+      where: { userId: user.id },
+      create: { userId: user.id, pinHash },
+      update: { pinHash }
     }),
     prisma.userAccount.update({
       where: { id: user.id },
-      data: { pinSet: true }
+      data: { pinSet: true, pinResetAllowed: false, pinResetAllowedUntil: null }
     })
   ])
 
-  return { ok: true as const }
+  if (canSetViaRegistration) {
+    await transitionState(user.id, AuthState.PIN_SET, 'pin_set_after_registration')
+  }
+
+  return { ok: true as const, success: true as const, next: 'login' as const }
+}
+
+export async function login(input: IdentityInput & { pin: string }) {
+  const user = await findUserByIdentity(input)
+  if (!user) return error('USER_NOT_FOUND', 'User not found')
+
+  const savedPin = await prisma.userPin.findUnique({ where: { userId: user.id } })
+  if (!savedPin) return error('INVALID_PIN', 'Invalid PIN')
+
+  const valid = await comparePin(input.pin, savedPin.pinHash)
+  if (!valid) return error('INVALID_PIN', 'Invalid PIN')
+
+  if (user.authState !== AuthState.ACTIVE) {
+    await transitionState(user.id, AuthState.ACTIVE, 'successful_login')
+  }
+
+  return { ok: true as const, success: true as const, token: createAuthToken(user.id, true, user.role) }
+}
+
+export async function resetPinStart(input: RegisterInput) {
+  const user = await findUserByIdentity(input)
+  if (!user) return error('USER_NOT_FOUND', 'User not found')
+
+  const otp = generateOtp()
+  await createOtpForPurpose(user.id, otp, OtpPurpose.PIN_RESET)
+  await prisma.userAccount.update({ where: { id: user.id }, data: { pinResetAllowed: false, pinResetAllowedUntil: null } })
+
+  const delivery = await sendOtp(user.phone, otp, user.email)
+  return {
+    ok: true as const,
+    success: true as const,
+    next: 'verify-otp' as const,
+    userId: user.id,
+    delivery,
+    devOtp: process.env.NODE_ENV === 'production' ? undefined : { otp }
+  }
+}
+
+export async function verifyResetPinOtp(input: OtpIdentityInput) {
+  const user = await findUserByIdentity(input)
+  if (!user) return error('USER_NOT_FOUND', 'User not found')
+
+  const verification = await verifyOtpForPurpose(user.id, input.otp, OtpPurpose.PIN_RESET)
+  if (!verification.ok) return verification
+
+  await prisma.userAccount.update({
+    where: { id: user.id },
+    data: {
+      pinResetAllowed: true,
+      pinResetAllowedUntil: resetSessionExpiryDate()
+    }
+  })
+
+  return { ok: true as const, success: true as const, next: 'set-pin' as const, userId: user.id }
+}
+
+export async function resendOtp(input: IdentityInput, purpose: OtpPurpose) {
+  const user = await findUserByIdentity(input)
+  if (!user) return error('USER_NOT_FOUND', 'User not found')
+
+  const latest = await prisma.verificationCode.findFirst({
+    where: { userId: user.id, purpose, consumedAt: null },
+    orderBy: { createdAt: 'desc' }
+  })
+
+  if (!latest || latest.attempts < latest.maxAttempts) {
+    return error('STATE_VIOLATION', 'OTP resend allowed only after max attempts are reached')
+  }
+
+  const otp = generateOtp()
+  await createOtpForPurpose(user.id, otp, purpose)
+  await sendOtp(user.phone, otp, user.email)
+
+  return { ok: true as const, success: true as const }
 }
 
 export async function checkIdentity(input: IdentityInput) {
-  const identityType = getIdentityType(input)
-  if (!identityType) {
-    return { ok: false as const, reason: 'invalid_input' as const, field: 'identity' as const }
-  }
-
   const user = await findUserByIdentity(input)
-  if (!user) {
-    return {
-      ok: true as const,
-      exists: false,
-      via: identityType,
-      verified: false,
-      pinSet: false,
-      next: '/register/start'
-    }
-  }
-
-  const verified = user.userStatus === UserStatus.ACTIVE
-  const pinSet = user.pinSet ?? false
-
-  return {
-    ok: true as const,
-    exists: true,
-    via: identityType,
-    verified,
-    pinSet,
-    user: {
-      id: user.id,
-      phone: user.phone,
-      email: user.email,
-      role: user.role ?? UserRole.USER
-    },
-    next: verified ? (pinSet ? '/login' : '/set-pin') : '/verify-otp'
-  }
+  return { ok: true as const, exists: Boolean(user) }
 }

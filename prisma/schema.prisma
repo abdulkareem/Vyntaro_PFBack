@@ -12,11 +12,14 @@ datasource db {
 //////////////////////////////
 
 model UserAccount {
-  id     String   @id @default(cuid())
-  phone  String   @unique
-  email  String?  @unique
-  role   UserRole @default(USER)
-  pinSet Boolean  @default(false)
+  id     String    @id @default(cuid())
+  phone  String    @unique
+  email  String?   @unique
+  role   UserRole  @default(USER)
+  pinSet Boolean   @default(false)
+  authState AuthState @default(IDENTITY_VERIFIED)
+  pinResetAllowed Boolean @default(false)
+  pinResetAllowedUntil DateTime?
 
   userStatus    UserStatus    @default(GHOST)
   accountStatus AccountStatus @default(ACTIVE)
@@ -38,6 +41,7 @@ model UserAccount {
   devices UserDevice[]
   userPin UserPin?
   otps    VerificationCode[]
+  authTransitions AuthStateTransition[]
 
   financialAccounts    FinancialAccount[]
   categories           Category[]
@@ -68,10 +72,26 @@ model UserDevice {
 model VerificationCode {
   id         String     @id @default(cuid())
   userId     String
+  purpose    OtpPurpose
   channel    OtpChannel
   codeHash   String
   expiresAt  DateTime
+  attempts   Int        @default(0)
+  maxAttempts Int       @default(3)
+  resendCount Int       @default(0)
   consumedAt DateTime?
+  createdAt  DateTime   @default(now())
+
+  user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AuthStateTransition {
+  id        String    @id @default(cuid())
+  userId    String
+  fromState AuthState
+  toState   AuthState
+  reason    String
+  createdAt DateTime  @default(now())
 
   user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -404,6 +424,18 @@ enum OtpChannel {
   PHONE
   EMAIL
   DEVICE
+}
+
+enum OtpPurpose {
+  REGISTER
+  PIN_RESET
+}
+
+enum AuthState {
+  IDENTITY_VERIFIED
+  OTP_VERIFIED
+  PIN_SET
+  ACTIVE
 }
 
 enum DashboardCardType {
