@@ -13,7 +13,7 @@ All auth endpoints are rooted at `/api/auth`.
 | `/login` | `POST` | Login and issue token |
 | `/pin/reset/start` | `POST` | Start PIN reset OTP flow |
 | `/pin/reset/otp/verify` | `POST` | Verify reset OTP and return `otpSessionId` for PIN setup |
-| `/otp/resend` | `POST` | Resend OTP after max attempts reached |
+| `/otp/resend` | `POST` | Resend OTP and recover OTP session for `register` or `reset` mode |
 
 ## Request schemas
 
@@ -37,6 +37,27 @@ All auth endpoints are rooted at `/api/auth`.
 `otpSessionId` can be sent either in request body or as header:
 
 `x-otp-session-id: <otpSessionId from otp verify>`
+
+
+### OTP resend
+```json
+{
+  "phone": "+911234567890",
+  "mode": "register"
+}
+```
+
+`mode` is required and must be either `register` or `reset`.
+
+Success:
+```json
+{
+  "success": true,
+  "message": "OTP resent successfully",
+  "next": "verify-otp",
+  "otpSessionId": "<new-otp-session-id>"
+}
+```
 
 ## OTP verify response contract
 
@@ -65,6 +86,8 @@ If OTP session context is missing/invalid/expired/consumed:
 
 ## Notes
 
+- OTP verification returns `OTP_LIMIT_EXCEEDED` when attempts are exhausted.
+- `/otp/resend` always creates a fresh OTP session (attempts reset to `3`) for the requested mode and invalidates previous active sessions for that mode.
 - OTP sessions are consumed immediately after a successful PIN set and cannot be reused.
 - `devOtp` is only present in non-production environments on start endpoints.
 

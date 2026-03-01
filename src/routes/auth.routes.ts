@@ -1,4 +1,3 @@
-import { OtpPurpose } from '@prisma/client'
 import { Router, type RequestHandler } from 'express'
 import { z } from 'zod'
 import { normalizePhone, phoneSchema } from '../lib/phone.js'
@@ -6,7 +5,7 @@ import {
   checkIdentity,
   login,
   registerStart,
-  resendOtp,
+  resendOtpByMode,
   resetPinStart,
   setUserPin,
   verifyRegistrationOtp,
@@ -53,6 +52,13 @@ const loginSchema = identityBaseSchema.extend({
   path: ['identity']
 })
 
+const resendOtpSchema = identityBaseSchema.extend({
+  mode: z.enum(['register', 'reset'])
+}).refine((value) => Boolean(value.phone || value.email), {
+  message: 'Either phone or email is required',
+  path: ['identity']
+})
+
 function asyncHandler(handler: RequestHandler): RequestHandler {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next)
 }
@@ -64,7 +70,6 @@ function errorStatus(code: AuthErrorCode): number {
   if (code === 'OTP_EXPIRED') return 410
   if (code === 'OTP_SESSION_REQUIRED') return 403
   if (code === 'OTP_LIMIT_EXCEEDED') return 429
-  if (code === 'STATE_VIOLATION') return 403
   return 400
 }
 
@@ -221,21 +226,22 @@ const resetPinOtpVerifyHandler = asyncHandler(async (req, res) => {
 })
 
 const resendOtpHandler = asyncHandler(async (req, res) => {
-  const parsed = identitySchema.safeParse(req.body)
+  const parsed = resendOtpSchema.safeParse(req.body)
   if (!parsed.success) {
     return res.status(400).json({ success: false, code: 'INVALID_INPUT', message: 'Invalid resend payload' })
   }
 
-  const result = await resendOtp(
-    { phone: parsed.data.phone ? normalizePhone(parsed.data.phone) : undefined, email: parsed.data.email },
-    OtpPurpose.PIN_RESET
-  )
+  const result = await resendOtpByMode({
+    phone: parsed.data.phone ? normalizePhone(parsed.data.phone) : undefined,
+    email: parsed.data.email,
+    mode: parsed.data.mode
+  })
 
   if (!result.ok) {
     return res.status(errorStatus(result.code)).json({ success: false, code: result.code, message: result.message })
   }
 
-  return res.json({ success: true, otpSessionId: result.otpSessionId })
+  return res.json({ success: true, message: 'OTP resent successfully', next: 'verify-otp', otpSessionId: result.otpSessionId })
 })
 
 authRouter.post('/identity/check', identityCheckHandler)
