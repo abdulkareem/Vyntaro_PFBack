@@ -13,7 +13,7 @@ export type AuthErrorCode =
   | 'INVALID_INPUT'
   | 'USER_EXISTS'
   | 'USER_NOT_FOUND'
-  | 'INVALID_OTP'
+  | 'OTP_INVALID'
   | 'OTP_EXPIRED'
   | 'OTP_LIMIT_EXCEEDED'
   | 'INVALID_PIN'
@@ -99,7 +99,7 @@ async function transitionState(userId: string, toState: AuthState, reason: strin
 
 async function createOtpForPurpose(userId: string, otp: string, purpose: OtpPurpose) {
   await prisma.verificationCode.deleteMany({ where: { userId, purpose, consumedAt: null } })
-  await prisma.verificationCode.create({
+  return prisma.verificationCode.create({
     data: {
       userId,
       purpose,
@@ -119,7 +119,7 @@ async function verifyOtpForPurpose(userId: string, otp: string, purpose: OtpPurp
     orderBy: { createdAt: 'desc' }
   })
 
-  if (!code) return error('OTP_EXPIRED', 'OTP has expired or is not available')
+  if (!code) return error('OTP_EXPIRED', 'OTP session is missing or expired')
   if (code.expiresAt < new Date()) return error('OTP_EXPIRED', 'OTP has expired')
 
   if (code.attempts >= code.maxAttempts) {
@@ -133,14 +133,14 @@ async function verifyOtpForPurpose(userId: string, otp: string, purpose: OtpPurp
       return error('OTP_LIMIT_EXCEEDED', 'OTP attempt limit exceeded')
     }
 
-    return error('INVALID_OTP', 'Invalid OTP')
+    return error('OTP_INVALID', 'Invalid OTP')
   }
 
   if (consume) {
     await prisma.verificationCode.update({ where: { id: code.id }, data: { consumedAt: new Date() } })
   }
 
-  return { ok: true as const }
+  return { ok: true as const, otpSessionId: code.id }
 }
 
 export async function registerStart(input: RegisterInput) {
@@ -170,7 +170,7 @@ export async function registerStart(input: RegisterInput) {
   })
 
   const otp = generateOtp()
-  await createOtpForPurpose(user.id, otp, OtpPurpose.REGISTER)
+  const otpSession = await createOtpForPurpose(user.id, otp, OtpPurpose.REGISTER)
   const delivery = await sendOtp(user.phone, otp, user.email)
 
   return {
@@ -178,6 +178,7 @@ export async function registerStart(input: RegisterInput) {
     success: true as const,
     next: 'verify-otp' as const,
     userId: user.id,
+    otpSessionId: otpSession.id,
     delivery,
     devOtp: process.env.NODE_ENV === 'production' ? undefined : { otp }
   }
@@ -192,7 +193,13 @@ export async function verifyRegistrationOtp(input: OtpIdentityInput) {
 
   await transitionState(user.id, AuthState.OTP_VERIFIED, 'register_otp_verified')
 
-  return { ok: true as const, success: true as const, next: 'set-pin' as const, userId: user.id }
+  return {
+    ok: true as const,
+    success: true as const,
+    next: 'set-pin' as const,
+    userId: user.id,
+    otpSessionId: verification.otpSessionId
+  }
 }
 
 export async function setUserPin(input: SetPinInput) {
@@ -251,7 +258,7 @@ export async function resetPinStart(input: RegisterInput) {
   if (!user) return error('USER_NOT_FOUND', 'User not found')
 
   const otp = generateOtp()
-  await createOtpForPurpose(user.id, otp, OtpPurpose.PIN_RESET)
+  const otpSession = await createOtpForPurpose(user.id, otp, OtpPurpose.PIN_RESET)
   await prisma.userAccount.update({ where: { id: user.id }, data: { pinResetAllowed: false, pinResetAllowedUntil: null } })
 
   const delivery = await sendOtp(user.phone, otp, user.email)
@@ -260,6 +267,7 @@ export async function resetPinStart(input: RegisterInput) {
     success: true as const,
     next: 'verify-otp' as const,
     userId: user.id,
+    otpSessionId: otpSession.id,
     delivery,
     devOtp: process.env.NODE_ENV === 'production' ? undefined : { otp }
   }
@@ -280,7 +288,13 @@ export async function verifyResetPinOtp(input: OtpIdentityInput) {
     }
   })
 
-  return { ok: true as const, success: true as const, next: 'set-pin' as const, userId: user.id }
+  return {
+    ok: true as const,
+    success: true as const,
+    next: 'set-pin' as const,
+    userId: user.id,
+    otpSessionId: verification.otpSessionId
+  }
 }
 
 export async function resendOtp(input: IdentityInput, purpose: OtpPurpose) {
@@ -297,10 +311,10 @@ export async function resendOtp(input: IdentityInput, purpose: OtpPurpose) {
   }
 
   const otp = generateOtp()
-  await createOtpForPurpose(user.id, otp, purpose)
+  const otpSession = await createOtpForPurpose(user.id, otp, purpose)
   await sendOtp(user.phone, otp, user.email)
 
-  return { ok: true as const, success: true as const }
+  return { ok: true as const, success: true as const, otpSessionId: otpSession.id }
 }
 
 export async function checkIdentity(input: IdentityInput) {
