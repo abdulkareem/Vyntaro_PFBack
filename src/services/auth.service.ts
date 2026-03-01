@@ -7,7 +7,6 @@ import { hashOtp } from './otp.service.js'
 
 const OTP_EXPIRY_MINUTES = 5
 const OTP_MAX_ATTEMPTS = 3
-const RESET_SESSION_MINUTES = 10
 
 export type AuthErrorCode =
   | 'INVALID_INPUT'
@@ -18,6 +17,7 @@ export type AuthErrorCode =
   | 'OTP_LIMIT_EXCEEDED'
   | 'INVALID_PIN'
   | 'PIN_FORMAT_INVALID'
+  | 'OTP_SESSION_REQUIRED'
   | 'STATE_VIOLATION'
 
 export type ServiceError = { ok: false; code: AuthErrorCode; message: string }
@@ -63,7 +63,7 @@ function otpExpiryDate() {
 }
 
 function resetSessionExpiryDate() {
-  return new Date(Date.now() + RESET_SESSION_MINUTES * 60 * 1000)
+  return new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000)
 }
 
 function validatePin(pin: string): boolean {
@@ -187,7 +187,7 @@ export async function verifyRegistrationOtp(input: OtpIdentityInput) {
   const user = await findUserByIdentity(input)
   if (!user) return error('USER_NOT_FOUND', 'User not found')
 
-  const verification = await verifyOtpForPurpose(user.id, input.otp, OtpPurpose.REGISTER)
+  const verification = await verifyOtpForPurpose(user.id, input.otp, OtpPurpose.REGISTER, false)
   if (!verification.ok) return verification
 
   await transitionState(user.id, AuthState.OTP_VERIFIED, 'register_otp_verified')
@@ -210,13 +210,12 @@ export async function setUserPin(input: SetPinInput) {
     include: { user: true }
   })
 
-  if (!otpSession || otpSession.purpose !== requiredPurpose || !otpSession.consumedAt) {
-    return error('STATE_VIOLATION', 'A verified OTP session is required to set a PIN')
+  if (!otpSession || otpSession.purpose !== requiredPurpose || otpSession.consumedAt) {
+    return error('OTP_SESSION_REQUIRED', 'OTP verification is required before setting a PIN')
   }
 
-  const otpSessionExpiry = otpSession.expiresAt.getTime() + RESET_SESSION_MINUTES * 60 * 1000
-  if (Date.now() > otpSessionExpiry) {
-    return error('STATE_VIOLATION', 'OTP session has expired; verify OTP again')
+  if (Date.now() > otpSession.expiresAt.getTime()) {
+    return error('OTP_SESSION_REQUIRED', 'OTP verification is required before setting a PIN')
   }
 
   const user = otpSession.user
@@ -227,7 +226,7 @@ export async function setUserPin(input: SetPinInput) {
     input.mode === 'reset' && user.pinResetAllowed && !!user.pinResetAllowedUntil && user.pinResetAllowedUntil > new Date()
 
   if (!canSetViaRegistration && !canSetViaReset) {
-    return error('STATE_VIOLATION', 'OTP verification is required before setting a PIN')
+    return error('OTP_SESSION_REQUIRED', 'OTP verification is required before setting a PIN')
   }
 
   const pinHash = await hashPin(input.pin)
@@ -240,6 +239,10 @@ export async function setUserPin(input: SetPinInput) {
     prisma.userAccount.update({
       where: { id: user.id },
       data: { pinSet: true, pinResetAllowed: false, pinResetAllowedUntil: null }
+    }),
+    prisma.verificationCode.update({
+      where: { id: otpSession.id },
+      data: { consumedAt: new Date(), attempts: 0, resendCount: 0 }
     })
   ])
 
@@ -291,7 +294,7 @@ export async function verifyResetPinOtp(input: OtpIdentityInput) {
   const user = await findUserByIdentity(input)
   if (!user) return error('USER_NOT_FOUND', 'User not found')
 
-  const verification = await verifyOtpForPurpose(user.id, input.otp, OtpPurpose.PIN_RESET)
+  const verification = await verifyOtpForPurpose(user.id, input.otp, OtpPurpose.PIN_RESET, false)
   if (!verification.ok) return verification
 
   await prisma.userAccount.update({
