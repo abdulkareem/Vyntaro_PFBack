@@ -187,6 +187,8 @@ model FinancialAccount {
 
   user         UserAccount   @relation(fields: [userId], references: [id], onDelete: Cascade)
   journalLines JournalLine[]
+
+  @@index([userId, accountType])
 }
 
 model JournalEntry {
@@ -198,6 +200,8 @@ model JournalEntry {
 
   user  UserAccount   @relation(fields: [userId], references: [id], onDelete: Cascade)
   lines JournalLine[]
+
+  @@index([userId, transactionDate])
 }
 
 model JournalLine {
@@ -211,6 +215,9 @@ model JournalLine {
   journalEntry JournalEntry     @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
   account      FinancialAccount @relation(fields: [accountId], references: [id])
   category     Category?        @relation(fields: [categoryId], references: [id])
+
+  @@index([accountId])
+  @@index([categoryId])
 }
 
 //////////////////////////////
@@ -233,6 +240,7 @@ model Category {
   JournalLine JournalLine[]
 
   @@unique([userId, slug])
+  @@index([userId, kind, bucket])
 }
 
 //////////////////////////////
@@ -249,6 +257,8 @@ model LendingRecord {
   status          LendingStatus
 
   user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, kind, status])
 }
 
 //////////////////////////////
@@ -309,12 +319,16 @@ model AssistantSuggestion {
 //////////////////////////////
 
 model BudgetPlan {
-  id        String   @id @default(cuid())
-  userId    String
-  name      String
-  createdAt DateTime @default(now())
+  id           String   @id @default(cuid())
+  userId       String
+  name         String
+  monthlyLimit Decimal  @default(0) @db.Decimal(18, 2)
+  yearlyLimit  Decimal  @default(0) @db.Decimal(18, 2)
+  createdAt    DateTime @default(now())
 
   user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
 
 //////////////////////////////
