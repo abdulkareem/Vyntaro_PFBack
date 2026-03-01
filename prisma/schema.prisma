@@ -12,40 +12,44 @@ datasource db {
 //////////////////////////////
 
 model UserAccount {
-  id              String        @id @default(cuid())
-  phone           String        @unique
-  email           String?       @unique
-  role            UserRole      @default(USER)
-  pinSet          Boolean       @default(false)
+  id     String   @id @default(cuid())
+  phone  String   @unique
+  email  String?  @unique
+  role   UserRole @default(USER)
+  pinSet Boolean  @default(false)
 
-  userStatus      UserStatus    @default(GHOST)
-  accountStatus   AccountStatus @default(ACTIVE)
+  userStatus    UserStatus    @default(GHOST)
+  accountStatus AccountStatus @default(ACTIVE)
 
-  subscriptionId  String?
-  referralCode    String        @unique
-  referredById    String?
+  referralCode String  @unique
+  referredById String?
 
-  freeMonthsEarned Int          @default(0)
+  freeMonthsEarned Int @default(0)
 
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  subscription    Subscription? @relation(fields: [subscriptionId], references: [id])
-  referredBy      UserAccount?  @relation("UserReferrals", fields: [referredById], references: [id])
-  referrals       UserAccount[] @relation("UserReferrals")
+  // One-to-one (virtual side)
+  subscription Subscription?
 
-  devices         UserDevice[]
-  userPin         UserPin?
-  otps            VerificationCode[]
+  referredBy UserAccount?  @relation("UserReferrals", fields: [referredById], references: [id])
+  referrals  UserAccount[] @relation("UserReferrals")
 
-  financialAccounts FinancialAccount[]
-  categories        Category[]
-  journalEntries    JournalEntry[]
-  budgetPlans       BudgetPlan[]
-  lendingRecords    LendingRecord[]
-  receipts          Receipt[]
-  vehicleBills      VehicleBill[]
+  devices UserDevice[]
+  userPin UserPin?
+  otps    VerificationCode[]
+
+  financialAccounts    FinancialAccount[]
+  categories           Category[]
+  journalEntries       JournalEntry[]
+  budgetPlans          BudgetPlan[]
+  lendingRecords       LendingRecord[]
+  receipts             Receipt[]
+  vehicleBills         VehicleBill[]
   assistantSuggestions AssistantSuggestion[]
+
+  referralsMade     Referral[] @relation("Referrer")
+  referralsReceived Referral[] @relation("Referee")
 }
 
 model UserDevice {
@@ -73,9 +77,9 @@ model VerificationCode {
 }
 
 model UserPin {
-  id        String   @id @default(cuid())
-  userId    String   @unique
-  pinHash   String
+  id      String @id @default(cuid())
+  userId  String @unique
+  pinHash String
 
   user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -85,35 +89,36 @@ model UserPin {
 //////////////////////////////
 
 model SubscriptionPlan {
-  id          String   @id @default(cuid())
-  name        String
-  price       Decimal  @db.Decimal(10,2)
+  id           String  @id @default(cuid())
+  name         String
+  price        Decimal @db.Decimal(10, 2)
   durationDays Int
-  isActive    Boolean  @default(true)
+  isActive     Boolean @default(true)
 
-  features    PlanFeature[]
-  cards       PlanDashboardCard[]
+  features PlanFeature[]
+  cards    PlanDashboardCard[]
 
-  createdAt   DateTime @default(now())
+  createdAt    DateTime       @default(now())
+  Subscription Subscription[]
 }
 
 model Subscription {
-  id            String   @id @default(cuid())
-  userId        String
-  planId        String
-  status        SubscriptionStatus
-  startDate     DateTime
-  endDate       DateTime
-  freeMonthsUsed Int     @default(0)
+  id             String             @id @default(cuid())
+  userId         String             @unique
+  planId         String
+  status         SubscriptionStatus
+  startDate      DateTime
+  endDate        DateTime
+  freeMonthsUsed Int                @default(0)
 
-  user UserAccount       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user UserAccount      @relation(fields: [userId], references: [id], onDelete: Cascade)
   plan SubscriptionPlan @relation(fields: [planId], references: [id])
 }
 
 model PlanFeature {
-  id        String        @id @default(cuid())
-  planId   String
-  feature  AppFeature
+  id      String     @id @default(cuid())
+  planId  String
+  feature AppFeature
 
   plan SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
@@ -122,8 +127,8 @@ model PlanFeature {
 
 model PlanDashboardCard {
   id        String            @id @default(cuid())
-  planId   String
-  cardType DashboardCardType
+  planId    String
+  cardType  DashboardCardType
   isEnabled Boolean           @default(true)
 
   plan SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
@@ -136,12 +141,11 @@ model PlanDashboardCard {
 //////////////////////////////
 
 model Referral {
-  id            String   @id @default(cuid())
-  referrerId    String
-  refereeId     String
-  rewarded      Boolean  @default(false)
-
-  createdAt     DateTime @default(now())
+  id         String   @id @default(cuid())
+  referrerId String
+  refereeId  String
+  rewarded   Boolean  @default(false)
+  createdAt  DateTime @default(now())
 
   referrer UserAccount @relation("Referrer", fields: [referrerId], references: [id])
   referee  UserAccount @relation("Referee", fields: [refereeId], references: [id])
@@ -154,38 +158,38 @@ model Referral {
 //////////////////////////////
 
 model FinancialAccount {
-  id             String   @id @default(cuid())
+  id             String      @id @default(cuid())
   userId         String
   name           String
   accountType    AccountType
-  currency       String   @default("INR")
-  openingBalance Decimal  @db.Decimal(18,2)
+  currency       String      @default("INR")
+  openingBalance Decimal     @db.Decimal(18, 2)
 
-  user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         UserAccount   @relation(fields: [userId], references: [id], onDelete: Cascade)
   journalLines JournalLine[]
 }
 
 model JournalEntry {
-  id              String   @id @default(cuid())
+  id              String      @id @default(cuid())
   userId          String
   transactionDate DateTime
   source          EntrySource
 
-  user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user  UserAccount   @relation(fields: [userId], references: [id], onDelete: Cascade)
   lines JournalLine[]
 }
 
 model JournalLine {
-  id             String   @id @default(cuid())
+  id             String         @id @default(cuid())
   journalEntryId String
   accountId      String
   categoryId     String?
   direction      EntryDirection
-  amount         Decimal  @db.Decimal(18,2)
+  amount         Decimal        @db.Decimal(18, 2)
 
-  journalEntry JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
-  account FinancialAccount @relation(fields: [accountId], references: [id])
-  category Category?       @relation(fields: [categoryId], references: [id])
+  journalEntry JournalEntry     @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  account      FinancialAccount @relation(fields: [accountId], references: [id])
+  category     Category?        @relation(fields: [categoryId], references: [id])
 }
 
 //////////////////////////////
@@ -193,18 +197,19 @@ model JournalLine {
 //////////////////////////////
 
 model Category {
-  id              String            @id @default(cuid())
-  userId          String
-  name            String
-  slug            String
-  kind            CategoryKind
-  bucket          CategoryBucket
+  id     String         @id @default(cuid())
+  userId String
+  name   String
+  slug   String
+  kind   CategoryKind
+  bucket CategoryBucket
 
   showOnDashboard Boolean           @default(false)
   dashboardOrder  Int?
   cardType        DashboardCardType @default(CUSTOM)
 
-  user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        UserAccount   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  JournalLine JournalLine[]
 
   @@unique([userId, slug])
 }
@@ -214,12 +219,12 @@ model Category {
 //////////////////////////////
 
 model LendingRecord {
-  id              String   @id @default(cuid())
+  id              String        @id @default(cuid())
   userId          String
   person          String
   kind            LendingKind
-  principalAmount Decimal  @db.Decimal(18,2)
-  currentBalance  Decimal  @db.Decimal(18,2)
+  principalAmount Decimal       @db.Decimal(18, 2)
+  currentBalance  Decimal       @db.Decimal(18, 2)
   status          LendingStatus
 
   user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -230,22 +235,21 @@ model LendingRecord {
 //////////////////////////////
 
 model ExternalSource {
-  id         String   @id @default(cuid())
+  id         String             @id @default(cuid())
   sourceType ExternalSourceType
   name       String?
-  isTrusted  Boolean  @default(false)
-
-  createdAt  DateTime @default(now())
+  isTrusted  Boolean            @default(false)
+  createdAt  DateTime           @default(now())
 }
 
 model Receipt {
-  id               String   @id @default(cuid())
+  id               String         @id @default(cuid())
   userId           String
   externalSourceId String?
   merchantName     String?
   purchasedAt      DateTime
-  totalAmount      Decimal  @db.Decimal(18,2)
-  currency         String   @default("INR")
+  totalAmount      Decimal        @db.Decimal(18, 2)
+  currency         String         @default("INR")
   sourceType       BillSourceType
   rawPayload       Json?
 
@@ -253,11 +257,11 @@ model Receipt {
 }
 
 model VehicleBill {
-  id            String   @id @default(cuid())
+  id            String         @id @default(cuid())
   userId        String
   driverName    String?
   vehicleNumber String?
-  totalAmount   Decimal  @db.Decimal(18,2)
+  totalAmount   Decimal        @db.Decimal(18, 2)
   distanceKm    Decimal?
   sourceType    BillSourceType
 
@@ -269,7 +273,7 @@ model VehicleBill {
 //////////////////////////////
 
 model AssistantSuggestion {
-  id              String   @id @default(cuid())
+  id              String         @id @default(cuid())
   userId          String
   suggestionType  SuggestionType
   title           String
@@ -280,53 +284,137 @@ model AssistantSuggestion {
 }
 
 //////////////////////////////
+// BUDGET
+//////////////////////////////
+
+model BudgetPlan {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  createdAt DateTime @default(now())
+
+  user UserAccount @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+//////////////////////////////
 // ENUMS
 //////////////////////////////
 
-enum UserRole { USER ADMIN SUPER_ADMIN }
-enum UserStatus { GHOST ACTIVE }
-enum AccountStatus { ACTIVE SUSPENDED DELETED }
+enum UserRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
 
-enum SubscriptionStatus { TRIAL ACTIVE EXPIRED CANCELLED }
+enum UserStatus {
+  GHOST
+  ACTIVE
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
 
 enum AppFeature {
   DASHBOARD
+  BUDGET
+  ANALYTICS
+  BILLS
   LENDING
-  BUDGETING
-  AI_ASSISTANT
-  REORDER
-  VEHICLE_TRACKING
+  REPORTS
 }
 
-enum DashboardCardType {
-  INCOME
-  EXPENSE
+enum CategoryBucket {
+  FOOD
+  TRANSPORT
+  HOUSING
+  HEALTH
+  ENTERTAINMENT
+  SAVINGS
+  INVESTMENT
   CHARITY
   MONEY_LENT
   MONEY_BORROWED
-  INVESTMENT
+  OTHER
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  INCOME
+  EXPENSE
+}
+
+enum EntrySource {
+  MANUAL
+  IMPORT
+  BILL_CAPTURE
+  CHAT
+  AI
+}
+
+enum EntryDirection {
+  DEBIT
+  CREDIT
+}
+
+enum LendingKind {
+  LENT
+  LOAN
+}
+
+enum LendingStatus {
+  OPEN
+  SETTLED
+  WRITTEN_OFF
+}
+
+enum ExternalSourceType {
+  MERCHANT_APP
+  VEHICLE_APP
+  POS
+  USER_SCAN
+}
+
+enum BillSourceType {
+  IMAGE
+  TEXT
+  FILE
+  EXTERNAL
+}
+
+enum SuggestionType {
+  BUDGET
+  REORDER
+  TRAVEL
+  CASHFLOW
+  TAX
+}
+
+enum OtpChannel {
+  PHONE
+  EMAIL
+  DEVICE
+}
+
+enum DashboardCardType {
+  SUMMARY
+  CHART
+  LIST
   CUSTOM
 }
 
-enum CategoryKind { INCOME EXPENSE TRANSFER }
-
-enum CategoryBucket {
-  FOOD TRANSPORT HOUSING HEALTH ENTERTAINMENT
-  SAVINGS INVESTMENT CHARITY MONEY_LENT MONEY_BORROWED OTHER
+enum CategoryKind {
+  INCOME
+  EXPENSE
+  TRANSFER
 }
-
-enum AccountType { ASSET LIABILITY INCOME EXPENSE }
-
-enum EntrySource { MANUAL IMPORT BILL_CAPTURE CHAT AI }
-enum EntryDirection { DEBIT CREDIT }
-
-enum LendingKind { LENT LOAN }
-enum LendingStatus { OPEN SETTLED WRITTEN_OFF }
-
-enum ExternalSourceType { MERCHANT_APP VEHICLE_APP POS USER_SCAN }
-
-enum BillSourceType { IMAGE TEXT FILE EXTERNAL }
-
-enum SuggestionType { BUDGET REORDER TRAVEL CASHFLOW TAX }
-
-enum OtpChannel { PHONE EMAIL DEVICE }
