@@ -15,6 +15,7 @@ function hydrateAuth(req: Request) {
   req.authUserId = payload.userId
   req.authPinSet = payload.pinSet
   req.authRole = payload.role
+  req.user = { id: payload.userId }
   return payload
 }
 

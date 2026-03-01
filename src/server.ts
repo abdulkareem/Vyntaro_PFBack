@@ -6,6 +6,7 @@ import { requestContext } from './middleware/request-context.middleware.js'
 import { adminRouter } from './routes/admin.routes.js'
 import { authRouter } from './routes/auth.routes.js'
 import { dashboardRouter } from './routes/dashboard.routes.js'
+import { ledgerRouter } from './routes/ledger.routes.js'
 import { bootstrapAdminFromEnv } from './services/admin-bootstrap.service.js'
 
 export const app = express()
@@ -22,6 +23,7 @@ app.get('/health', (_req, res) => res.json({ ok: true }))
 
 app.use('/api/auth', authRouter)
 app.use('/api/dashboard', dashboardRouter)
+app.use('/api/ledger', ledgerRouter)
 app.use('/api/admin', adminRouter)
 
 app.use((_req, res) => sendError(res, 404, 'ROUTE_NOT_FOUND', 'Route not found'))
