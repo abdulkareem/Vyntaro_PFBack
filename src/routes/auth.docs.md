@@ -144,3 +144,13 @@ User not found (`401`):
 ```
 
 `/api/auth/login` always resolves on the auth router and does not return `404` for auth failures.
+
+
+`token` is a signed JWT (`HS256`) with these claims:
+- `sub`: user id
+- `userId`: user id (explicit claim for frontend convenience)
+- `iat`: issued-at unix timestamp
+- `exp`: expiry unix timestamp
+- `pinSet`: pin readiness flag
+- `role`: user role
+
