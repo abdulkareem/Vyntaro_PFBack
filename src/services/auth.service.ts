@@ -20,10 +20,16 @@ type CompatUser = {
   email: string | null
   country?: string | null
   region?: string | null
-  verifiedAt: Date | null
+  userStatus: UserStatus
   role?: UserRole
   pinSet?: boolean
   userPin?: { pinHash: string } | null
+}
+
+function generateReferralCode(phone: string): string {
+  const digits = phone.replace(/\D/g, '').slice(-6) || 'USER'
+  const suffix = Math.random().toString(36).slice(2, 8).toUpperCase()
+  return `${digits}${suffix}`
 }
 
 function isMissingColumnError(error: unknown): boolean {
@@ -45,7 +51,7 @@ async function findUserByPhoneCompat(phone: string, includePin = false): Promise
         id: true,
         phone: true,
         email: true,
-        verifiedAt: true,
+        userStatus: true,
         userPin: includePin ? { select: { pinHash: true } } : false
       }
     })
@@ -77,11 +83,9 @@ export async function registerStart(input: RegisterInput) {
       data: {
         phone: input.phone,
         email: input.email,
-        country: input.country,
-        region: input.region,
+        referralCode: generateReferralCode(input.phone),
         pinSet: false,
         role: UserRole.USER,
-        verifiedAt: new Date(),
         userStatus: UserStatus.ACTIVE
       }
     })
@@ -91,9 +95,7 @@ export async function registerStart(input: RegisterInput) {
       data: {
         phone: input.phone,
         email: input.email,
-        country: input.country,
-        region: input.region,
-        verifiedAt: new Date(),
+        referralCode: generateReferralCode(input.phone),
         userStatus: UserStatus.ACTIVE
       }
     })
@@ -128,7 +130,7 @@ export async function verifyRegistrationOtp(phone: string, otp: string) {
 
   const updatedUser = await prisma.userAccount.update({
     where: { id: user.id },
-    data: { verifiedAt: new Date(), userStatus: UserStatus.ACTIVE }
+    data: { userStatus: UserStatus.ACTIVE }
   })
 
   return {
@@ -136,8 +138,7 @@ export async function verifyRegistrationOtp(phone: string, otp: string) {
     user: {
       id: updatedUser.id,
       phone: updatedUser.phone,
-      email: updatedUser.email,
-      verifiedAt: updatedUser.verifiedAt
+      email: updatedUser.email
     },
     next: '/dashboard'
   }
@@ -145,7 +146,9 @@ export async function verifyRegistrationOtp(phone: string, otp: string) {
 
 export async function setUserPin(phone: string, pin: string) {
   const user = await prisma.userAccount.findUnique({ where: { phone } })
-  if (!user?.verifiedAt) return { ok: false as const, reason: 'not_verified' as const }
+  if (!user || user.userStatus !== UserStatus.ACTIVE) {
+    return { ok: false as const, reason: 'not_verified' as const }
+  }
 
   const pinHash = await hashPin(pin)
   await prisma.$transaction([
@@ -174,7 +177,9 @@ export async function setUserPin(phone: string, pin: string) {
 
 export async function login(phone: string, pin: string) {
   const user = await findUserByPhoneCompat(phone, true)
-  if (!user || !user.verifiedAt) return { ok: false as const, reason: 'invalid_credentials' as const }
+  if (!user || user.userStatus !== UserStatus.ACTIVE) {
+    return { ok: false as const, reason: 'invalid_credentials' as const }
+  }
   const pinSet = user.pinSet ?? Boolean(user.userPin)
   if (!pinSet || !user.userPin) return { ok: false as const, reason: 'pin_not_set' as const }
 
@@ -187,7 +192,6 @@ export async function login(phone: string, pin: string) {
       id: user.id,
       phone: user.phone,
       email: user.email,
-      verifiedAt: user.verifiedAt,
       pinSet,
       role: user.role ?? UserRole.USER
     },
@@ -198,7 +202,9 @@ export async function login(phone: string, pin: string) {
 
 export async function resetPinStart(phone: string) {
   const user = await findUserByPhoneCompat(phone)
-  if (!user?.verifiedAt) return { ok: false as const, reason: 'not_verified' as const }
+  if (!user || user.userStatus !== UserStatus.ACTIVE) {
+    return { ok: false as const, reason: 'not_verified' as const }
+  }
 
   const otp = generateOtp()
   await createOtp(phone, otp, user.email ?? null, user.country ?? undefined, user.region ?? undefined)
@@ -216,7 +222,9 @@ export async function resetPinStart(phone: string) {
 
 export async function resetPinComplete(phone: string, otp: string, pin: string) {
   const user = await findUserByPhoneCompat(phone)
-  if (!user?.verifiedAt) return { ok: false as const, reason: 'not_verified' as const }
+  if (!user || user.userStatus !== UserStatus.ACTIVE) {
+    return { ok: false as const, reason: 'not_verified' as const }
+  }
 
   try {
     await verifyOtp(phone, otp)
