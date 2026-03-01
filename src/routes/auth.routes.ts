@@ -46,6 +46,15 @@ function respondServiceError(res: Parameters<RequestHandler>[1], code: AuthError
   return sendError(res, codeToStatus(code), code, message)
 }
 
+function respondResetOtpVerify(res: Parameters<RequestHandler>[1], result: Awaited<ReturnType<typeof verifyResetPinOtp>>) {
+  if (!result.ok) {
+    const code = result.code === 'OTP_INVALID' ? 'INVALID_OTP' : result.code
+    return res.status(codeToStatus(result.code)).json({ success: false, code, message: result.message })
+  }
+
+  return res.json({ success: true, next: 'set-pin', otpSessionId: result.otpSessionId })
+}
+
 authRouter.post('/login', rateLimit('auth-login', { windowMs: 60_000, max: 10 }), asyncHandler(async (req, res) => {
   const parsed = loginSchema.safeParse(req.body)
   if (!parsed.success) return sendError(res, 400, 'INVALID_INPUT', 'Invalid login payload')
@@ -135,13 +144,15 @@ authRouter.post('/pin/reset/start', rateLimit('auth-pin-reset-start', { windowMs
   return sendOk(res, result)
 }))
 
-authRouter.post('/pin/reset/verify', rateLimit('auth-pin-reset-verify', { windowMs: 60_000, max: 8 }), asyncHandler(async (req, res) => {
+const resetOtpVerifyHandler = asyncHandler(async (req, res) => {
   const parsed = otpVerifySchema.safeParse(req.body)
   if (!parsed.success) return sendError(res, 400, 'INVALID_INPUT', 'Invalid reset verify payload')
   const result = await verifyResetPinOtp({ phone: parsed.data.phone ? normalizePhone(parsed.data.phone) : undefined, email: parsed.data.email, otp: parsed.data.otp })
-  if (!result.ok) return respondServiceError(res, result.code, result.message)
-  return sendOk(res, result)
-}))
+  return respondResetOtpVerify(res, result)
+})
+
+authRouter.post('/pin/reset/otp/verify', rateLimit('auth-pin-reset-otp-verify', { windowMs: 60_000, max: 8 }), resetOtpVerifyHandler)
+authRouter.post('/pin/reset/verify', rateLimit('auth-pin-reset-verify', { windowMs: 60_000, max: 8 }), resetOtpVerifyHandler)
 
 authRouter.post('/pin/reset/complete', asyncHandler(async (req, res) => {
   const parsed = setPinSchema.safeParse({ ...req.body, mode: 'reset' })
