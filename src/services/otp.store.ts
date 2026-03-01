@@ -49,7 +49,7 @@ export async function createOtp(
   }
 }
 
-export async function verifyOtp(phone: string, otp: string): Promise<OtpData> {
+export async function verifyOtp(phone: string, otp: string, consume = true): Promise<OtpData> {
   const key = `otp:${phone}`
   let raw: string | null = null
 
@@ -83,11 +83,14 @@ export async function verifyOtp(phone: string, otp: string): Promise<OtpData> {
     throw new Error('Invalid OTP')
   }
 
-  try {
-    if (!redis) throw new Error('redis_unavailable')
-    await redis.del(key)
-  } catch {
-    inMemoryOtpStore.delete(key)
+  if (consume) {
+    try {
+      if (!redis) throw new Error('redis_unavailable')
+      await redis.del(key)
+    } catch {
+      inMemoryOtpStore.delete(key)
+    }
   }
+
   return data
 }
