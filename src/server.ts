@@ -41,6 +41,12 @@ app.get('/health', (_req, res) => {
 app.use('/api/auth', authRouter)
 app.use('/api/dashboard', dashboardRouter)
 
+app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('Unhandled request error', error)
+  const message = error instanceof Error ? error.message : 'Internal server error'
+  return res.status(500).json({ ok: false, error: 'internal_server_error', message })
+})
+
 bootstrapAdminFromEnv().catch((error) => {
   console.error('Admin bootstrap failed', error)
 })

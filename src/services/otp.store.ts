@@ -4,6 +4,16 @@ import { hashOtp } from './otp.service.js'
 const OTP_TTL = 300
 const MAX_ATTEMPTS = 5
 
+const inMemoryOtpStore = new Map<string, { payload: OtpData; expiresAt: number }>()
+
+function purgeInMemoryOtp(key: string): void {
+  const existing = inMemoryOtpStore.get(key)
+  if (!existing) return
+  if (existing.expiresAt <= Date.now()) {
+    inMemoryOtpStore.delete(key)
+  }
+}
+
 export interface OtpData {
   hash: string
   attempts: number
@@ -31,12 +41,24 @@ export async function createOtp(
     region
   }
 
-  await redis.set(key, JSON.stringify(data), 'EX', OTP_TTL)
+  try {
+    await redis.set(key, JSON.stringify(data), 'EX', OTP_TTL)
+  } catch {
+    inMemoryOtpStore.set(key, { payload: data, expiresAt: Date.now() + OTP_TTL * 1000 })
+  }
 }
 
 export async function verifyOtp(phone: string, otp: string): Promise<OtpData> {
   const key = `otp:${phone}`
-  const raw = await redis.get(key)
+  let raw: string | null = null
+
+  try {
+    raw = await redis.get(key)
+  } catch {
+    purgeInMemoryOtp(key)
+    const fallback = inMemoryOtpStore.get(key)
+    raw = fallback ? JSON.stringify(fallback.payload) : null
+  }
 
   if (!raw) {
     throw new Error('OTP expired')
@@ -50,10 +72,18 @@ export async function verifyOtp(phone: string, otp: string): Promise<OtpData> {
 
   if (hashOtp(otp) !== data.hash) {
     data.attempts += 1
-    await redis.set(key, JSON.stringify(data), 'EX', OTP_TTL)
+    try {
+      await redis.set(key, JSON.stringify(data), 'EX', OTP_TTL)
+    } catch {
+      inMemoryOtpStore.set(key, { payload: data, expiresAt: Date.now() + OTP_TTL * 1000 })
+    }
     throw new Error('Invalid OTP')
   }
 
-  await redis.del(key)
+  try {
+    await redis.del(key)
+  } catch {
+    inMemoryOtpStore.delete(key)
+  }
   return data
 }
