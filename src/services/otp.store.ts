@@ -42,6 +42,7 @@ export async function createOtp(
   }
 
   try {
+    if (!redis) throw new Error('redis_unavailable')
     await redis.set(key, JSON.stringify(data), 'EX', OTP_TTL)
   } catch {
     inMemoryOtpStore.set(key, { payload: data, expiresAt: Date.now() + OTP_TTL * 1000 })
@@ -53,6 +54,7 @@ export async function verifyOtp(phone: string, otp: string): Promise<OtpData> {
   let raw: string | null = null
 
   try {
+    if (!redis) throw new Error('redis_unavailable')
     raw = await redis.get(key)
   } catch {
     purgeInMemoryOtp(key)
@@ -73,6 +75,7 @@ export async function verifyOtp(phone: string, otp: string): Promise<OtpData> {
   if (hashOtp(otp) !== data.hash) {
     data.attempts += 1
     try {
+      if (!redis) throw new Error('redis_unavailable')
       await redis.set(key, JSON.stringify(data), 'EX', OTP_TTL)
     } catch {
       inMemoryOtpStore.set(key, { payload: data, expiresAt: Date.now() + OTP_TTL * 1000 })
@@ -81,6 +84,7 @@ export async function verifyOtp(phone: string, otp: string): Promise<OtpData> {
   }
 
   try {
+    if (!redis) throw new Error('redis_unavailable')
     await redis.del(key)
   } catch {
     inMemoryOtpStore.delete(key)
