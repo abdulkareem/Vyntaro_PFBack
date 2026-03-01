@@ -31,3 +31,20 @@ test('auth otp verify rate limits', async () => {
   assert.equal(status, 429)
   await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
 })
+
+
+test('reset pin otp verify endpoint is mounted on expected path', async () => {
+  const server = await createServer()
+  const port = (server.address() as any).port
+  const response = await fetch(`http://127.0.0.1:${port}/api/auth/pin/reset/otp/verify`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({})
+  })
+  assert.notEqual(response.status, 404)
+  assert.equal(response.status, 400)
+  const body = await response.json()
+  assert.equal(body.ok, false)
+  assert.equal(body.error.code, 'INVALID_INPUT')
+  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+})
