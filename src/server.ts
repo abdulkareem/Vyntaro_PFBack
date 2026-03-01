@@ -42,12 +42,12 @@ app.use('/api/auth', authRouter)
 app.use('/api/dashboard', dashboardRouter)
 
 app.use((_req, res) => {
-  return res.status(404).json({ ok: false, error: 'route_not_found' })
+  return res.status(404).json({ success: false, code: 'ROUTE_NOT_FOUND', message: 'Route not found' })
 })
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Unhandled request error', error)
-  return res.status(500).json({ ok: false, error: 'internal_server_error' })
+  return res.status(500).json({ success: false, code: 'INTERNAL_SERVER_ERROR', message: 'An unexpected error occurred' })
 })
 
 bootstrapAdminFromEnv().catch((error) => {

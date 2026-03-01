@@ -60,7 +60,7 @@ function asyncHandler(handler: RequestHandler): RequestHandler {
 function errorStatus(code: AuthErrorCode): number {
   if (code === 'USER_EXISTS') return 409
   if (code === 'USER_NOT_FOUND') return 404
-  if (code === 'INVALID_PIN' || code === 'INVALID_OTP') return 400
+  if (code === 'INVALID_PIN' || code === 'OTP_INVALID') return 400
   if (code === 'OTP_EXPIRED') return 410
   if (code === 'OTP_LIMIT_EXCEEDED') return 429
   if (code === 'STATE_VIOLATION') return 409
@@ -96,7 +96,14 @@ const registerStartHandler = asyncHandler(async (req, res) => {
     return res.status(errorStatus(result.code)).json({ success: false, code: result.code, message: result.message })
   }
 
-  return res.json({ success: true, next: 'verify-otp', userId: result.userId, delivery: result.delivery, devOtp: result.devOtp })
+  return res.json({
+    success: true,
+    next: 'verify-otp',
+    userId: result.userId,
+    otpSessionId: result.otpSessionId,
+    delivery: result.delivery,
+    devOtp: result.devOtp
+  })
 })
 
 const registerOtpVerifyHandler = asyncHandler(async (req, res) => {
@@ -115,7 +122,7 @@ const registerOtpVerifyHandler = asyncHandler(async (req, res) => {
     return res.status(errorStatus(result.code)).json({ success: false, code: result.code, message: result.message })
   }
 
-  return res.json({ success: true, next: 'set-pin', userId: result.userId })
+  return res.json({ success: true, next: 'set-pin', userId: result.userId, otpSessionId: result.otpSessionId })
 })
 
 const setPinHandler = asyncHandler(async (req, res) => {
@@ -166,7 +173,14 @@ const resetPinStartHandler = asyncHandler(async (req, res) => {
     return res.status(errorStatus(result.code)).json({ success: false, code: result.code, message: result.message })
   }
 
-  return res.json({ success: true, next: 'verify-otp', userId: result.userId, delivery: result.delivery, devOtp: result.devOtp })
+  return res.json({
+    success: true,
+    next: 'verify-otp',
+    userId: result.userId,
+    otpSessionId: result.otpSessionId,
+    delivery: result.delivery,
+    devOtp: result.devOtp
+  })
 })
 
 const resetPinOtpVerifyHandler = asyncHandler(async (req, res) => {
@@ -185,7 +199,7 @@ const resetPinOtpVerifyHandler = asyncHandler(async (req, res) => {
     return res.status(errorStatus(result.code)).json({ success: false, code: result.code, message: result.message })
   }
 
-  return res.json({ success: true, next: 'set-pin', userId: result.userId })
+  return res.json({ success: true, next: 'set-pin', userId: result.userId, otpSessionId: result.otpSessionId })
 })
 
 const resendOtpHandler = asyncHandler(async (req, res) => {
@@ -203,7 +217,7 @@ const resendOtpHandler = asyncHandler(async (req, res) => {
     return res.status(errorStatus(result.code)).json({ success: false, code: result.code, message: result.message })
   }
 
-  return res.json({ success: true })
+  return res.json({ success: true, otpSessionId: result.otpSessionId })
 })
 
 authRouter.post('/identity/check', identityCheckHandler)
