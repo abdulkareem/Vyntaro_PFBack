@@ -14,7 +14,7 @@ All endpoints below are under `/api/auth`.
 | `/login` | `POST` | `{ phone?/email?, pin }` | `{ success: true, token }` |
 | `/pin/reset/start` | `POST` | `{ country?, phone?/email? }` | `{ success: true, next: "verify-otp", userId, otpSessionId }` |
 | `/pin/reset/otp/verify` | `POST` | `{ phone?/email?, otp }` | `{ success: true, next: "set-pin", userId, otpSessionId }` |
-| `/otp/resend` | `POST` | `{ phone?/email? }` | `{ success: true, otpSessionId }` |
+| `/otp/resend` | `POST` | `{ phone?/email?, mode: "register" | "reset" }` | `{ success: true, message: "OTP resent successfully", next: "verify-otp", otpSessionId }` |
 
 ## OTP session contract for frontend
 
@@ -35,6 +35,9 @@ All endpoints below are under `/api/auth`.
 - not already consumed.
 
 After successful PIN set, the OTP session is consumed and cannot be reused.
+
+When OTP attempts are exhausted, OTP verify returns `OTP_LIMIT_EXCEEDED`.
+Clients can always recover by calling `/api/auth/otp/resend`, which creates a fresh OTP session with reset attempts.
 
 ## Error contract
 

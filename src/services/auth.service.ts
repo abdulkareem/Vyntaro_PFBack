@@ -18,7 +18,6 @@ export type AuthErrorCode =
   | 'INVALID_PIN'
   | 'PIN_FORMAT_INVALID'
   | 'OTP_SESSION_REQUIRED'
-  | 'STATE_VIOLATION'
 
 export type ServiceError = { ok: false; code: AuthErrorCode; message: string }
 
@@ -39,6 +38,8 @@ type SetPinInput = {
   mode: 'register' | 'reset'
   otpSessionId: string
 }
+
+type OtpMode = 'register' | 'reset'
 
 type OtpIdentityInput = IdentityInput & {
   otp: string
@@ -327,20 +328,23 @@ export async function resendOtp(input: IdentityInput, purpose: OtpPurpose) {
   const user = await findUserByIdentity(input)
   if (!user) return error('USER_NOT_FOUND', 'User not found')
 
-  const latest = await prisma.verificationCode.findFirst({
-    where: { userId: user.id, purpose, consumedAt: null },
-    orderBy: { createdAt: 'desc' }
-  })
-
-  if (!latest || latest.attempts < latest.maxAttempts) {
-    return error('STATE_VIOLATION', 'OTP resend allowed only after max attempts are reached')
-  }
-
   const otp = generateOtp()
   const otpSession = await createOtpForPurpose(user.id, otp, purpose)
   await sendOtp(user.phone, otp, user.email)
 
+  if (purpose === OtpPurpose.PIN_RESET) {
+    await prisma.userAccount.update({
+      where: { id: user.id },
+      data: { pinResetAllowed: false, pinResetAllowedUntil: null }
+    })
+  }
+
   return { ok: true as const, success: true as const, otpSessionId: otpSession.id }
+}
+
+export async function resendOtpByMode(input: IdentityInput & { mode: OtpMode }) {
+  const purpose = input.mode === 'register' ? OtpPurpose.REGISTER : OtpPurpose.PIN_RESET
+  return resendOtp(input, purpose)
 }
 
 export async function checkIdentity(input: IdentityInput) {
