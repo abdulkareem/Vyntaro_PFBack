@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import { AccountType, LendingKind, LendingStatus, Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma.js'
 import type {
@@ -333,5 +334,69 @@ export async function getMonthlyPrediction(
 
   return {
     projectedBalance: currentBalance - avgDailyExpense * daysRemaining
+  }
+}
+
+
+type DashboardSummaryResponse = {
+  requestId: string
+  timestamp: string
+  month: number
+  year: number
+  balances: { netWorth: number; savingsThisMonth: number; assets: number; liabilities: number }
+  metrics: { income: number; expense: number; cashflow: number }
+  todaySummary: { income: number; expense: number }
+  bills: unknown[]
+  transactions: unknown[]
+  budgets: unknown[]
+  analytics: Array<{ month: string; income: number; expense: number }>
+  insights: { financialHealth: FinancialHealthResponse; prediction: PredictionResponse; alerts: DashboardAlert[] }
+  ledgerCategoriesState: { total: number }
+}
+
+export async function getDashboardSummary(userId: string, month: number, year: number, requestId = crypto.randomUUID()): Promise<DashboardSummaryResponse> {
+  const [incomeExpense, netWorth, expenseBreakdown, alerts, prediction, lendingSummary, financialHealth, categoriesCount] = await Promise.all([
+    getMonthlyIncomeExpense(userId, month, year),
+    getNetWorthSummary(userId, month, year),
+    getExpenseBreakdown(userId, month, year),
+    generateDashboardAlerts(userId, month, year),
+    getMonthlyPrediction(userId, month, year),
+    getLendingSummary(userId, month, year),
+    calculateFinancialHealth(userId, month, year),
+    prisma.category.count({ where: { userId } })
+  ])
+
+  const now = new Date()
+  const [todayIncomeAgg, todayExpenseAgg] = await Promise.all([
+    prisma.journalLine.aggregate({
+      where: { journalEntry: { userId, transactionDate: { gte: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0)), lte: now } }, account: { accountType: AccountType.INCOME } },
+      _sum: { amount: true }
+    }),
+    prisma.journalLine.aggregate({
+      where: { journalEntry: { userId, transactionDate: { gte: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0)), lte: now } }, account: { accountType: AccountType.EXPENSE } },
+      _sum: { amount: true }
+    })
+  ])
+
+  const analytics = await Promise.all(Array.from({ length: 6 }).map(async (_, idx) => {
+    const d = new Date(Date.UTC(year, month - 1 - idx, 1))
+    const values = await getMonthlyIncomeExpense(userId, d.getUTCMonth() + 1, d.getUTCFullYear())
+    return { month: `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`, income: values.income, expense: values.expense }
+  }))
+
+  return {
+    requestId,
+    timestamp: new Date().toISOString(),
+    month,
+    year,
+    balances: { ...netWorth, assets: netWorth.netWorth + lendingSummary.totalLent, liabilities: lendingSummary.totalLoan },
+    metrics: { income: incomeExpense.income, expense: incomeExpense.expense, cashflow: incomeExpense.income - incomeExpense.expense },
+    todaySummary: { income: toNumber(todayIncomeAgg._sum.amount), expense: toNumber(todayExpenseAgg._sum.amount) },
+    bills: [],
+    transactions: expenseBreakdown,
+    budgets: [],
+    analytics: analytics.reverse(),
+    insights: { financialHealth, prediction, alerts },
+    ledgerCategoriesState: { total: categoriesCount }
   }
 }
