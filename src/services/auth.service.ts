@@ -267,7 +267,16 @@ export async function login(input: IdentityInput & { pin: string }) {
     await transitionState(user.id, AuthState.ACTIVE, 'successful_login')
   }
 
-  return { ok: true as const, success: true as const, token: createAuthToken(user.id, true, user.role) }
+  return {
+    ok: true as const,
+    success: true as const,
+    token: createAuthToken(user.id, true, user.role),
+    user: {
+      id: user.id,
+      phone: user.phone,
+      email: user.email
+    }
+  }
 }
 
 export async function resetPinStart(input: RegisterInput) {

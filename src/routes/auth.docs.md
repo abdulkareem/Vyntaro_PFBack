@@ -67,3 +67,57 @@ If OTP session context is missing/invalid/expired/consumed:
 
 - OTP sessions are consumed immediately after a successful PIN set and cannot be reused.
 - `devOtp` is only present in non-production environments on start endpoints.
+
+
+## Login request/response contract
+
+Endpoint: `POST /api/auth/login`
+
+Request:
+```json
+{
+  "phone": "+911234567890",
+  "pin": "1234"
+}
+```
+
+or
+
+```json
+{
+  "email": "user@example.com",
+  "pin": "1234"
+}
+```
+
+Success (`200`):
+```json
+{
+  "success": true,
+  "token": "<jwt>",
+  "user": {
+    "id": "<user-id>",
+    "phone": "+911234567890",
+    "email": "user@example.com"
+  }
+}
+```
+
+Invalid PIN (`401`):
+```json
+{
+  "success": false,
+  "code": "INVALID_PIN",
+  "message": "Invalid PIN"
+}
+```
+
+User not found (`401`):
+```json
+{
+  "success": false,
+  "code": "USER_NOT_FOUND"
+}
+```
+
+`/api/auth/login` always resolves on the auth router and does not return `404` for auth failures.

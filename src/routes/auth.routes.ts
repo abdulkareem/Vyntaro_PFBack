@@ -162,10 +162,18 @@ const loginHandler = asyncHandler(async (req, res) => {
   })
 
   if (!result.ok) {
+    if (result.code === 'INVALID_PIN') {
+      return res.status(401).json({ success: false, code: 'INVALID_PIN', message: 'Invalid PIN' })
+    }
+
+    if (result.code === 'USER_NOT_FOUND') {
+      return res.status(401).json({ success: false, code: 'USER_NOT_FOUND' })
+    }
+
     return res.status(errorStatus(result.code)).json({ success: false, code: result.code, message: result.message })
   }
 
-  return res.json({ success: true, token: result.token })
+  return res.json({ success: true, token: result.token, user: result.user })
 })
 
 const resetPinStartHandler = asyncHandler(async (req, res) => {
