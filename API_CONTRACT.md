@@ -1,78 +1,69 @@
-# Backend API Contract (Authentication State Machine)
+# Backend API Contract (Auth, Profile, Dashboard, Admin)
 
 Base URL prefix: `/api`
 
+## Error shape (all endpoints)
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "MACHINE_CODE",
+    "message": "Human-readable message"
+  }
+}
+```
+
 ## Auth endpoints
 
-All endpoints below are under `/api/auth`.
+- `POST /api/auth/login`
+- `POST /api/auth/refresh`
+- `POST /api/auth/identity/check`
+- `POST /api/auth/register/start`
+- `POST /api/auth/register/verify`
+- `POST /api/auth/otp/request`
+- `POST /api/auth/otp/resend`
+- `POST /api/auth/otp/verify`
+- `POST /api/auth/pin/set`
+- `POST /api/auth/pin/set-with-mode`
+- `POST /api/auth/pin/reset/start`
+- `POST /api/auth/pin/reset/verify`
+- `POST /api/auth/pin/reset/complete`
+- `POST /api/auth/pin/change`
+- `POST /api/auth/profile/update`
 
-| Endpoint | Method | Request body | Success response |
-|---|---|---|---|
-| `/register/start` | `POST` | `{ country?, phone?, email? }` | `{ success: true, next: "verify-otp", userId, otpSessionId }` |
-| `/register/otp/verify` | `POST` | `{ phone?/email?, otp }` | `{ success: true, next: "set-pin", userId, otpSessionId }` |
-| `/pin/set` | `POST` | `{ pin, mode, otpSessionId? }` and/or header `x-otp-session-id` | `{ success: true, next: "login" }` |
-| `/login` | `POST` | `{ phone?/email?, pin }` | `{ success: true, token }` |
-| `/pin/reset/start` | `POST` | `{ country?, phone?/email? }` | `{ success: true, next: "verify-otp", userId, otpSessionId }` |
-| `/pin/reset/otp/verify` | `POST` | `{ phone?/email?, otp }` | `{ success: true, next: "set-pin", userId, otpSessionId }` |
-| `/otp/resend` | `POST` | `{ phone?/email?, mode: "register" | "reset" }` | `{ success: true, message: "OTP resent successfully", next: "verify-otp", otpSessionId }` |
-
-## OTP session contract for frontend
-
-1. Call OTP verify endpoint and store `otpSessionId` from response.
-2. Call `/api/auth/pin/set` with:
-   - `pin`
-   - `mode` (`register` or `reset`)
-   - `otpSessionId` in body **or** `x-otp-session-id` header.
-3. Handle `403` error with code `OTP_SESSION_REQUIRED` by restarting OTP verification.
-
-### OTP session validation enforced in `/pin/set`
-
-`otpSessionId` must point to a session that is:
-- present,
-- for the correct purpose (`REGISTER` / `PIN_RESET`),
-- OTP-verified (via auth state/flow flags),
-- not expired,
-- not already consumed.
-
-After successful PIN set, the OTP session is consumed and cannot be reused.
-
-When OTP attempts are exhausted, OTP verify returns `OTP_LIMIT_EXCEEDED`.
-Clients can always recover by calling `/api/auth/otp/resend`, which creates a fresh OTP session with reset attempts.
-
-## Error contract
-
-All user mistakes return explicit structured errors:
+Login and refresh return:
 
 ```json
 {
-  "success": false,
-  "code": "INVALID_OTP | OTP_EXPIRED | OTP_LIMIT_EXCEEDED | OTP_SESSION_REQUIRED | INVALID_PIN | USER_NOT_FOUND | ...",
-  "message": "Human readable error"
+  "ok": true,
+  "user": { "id": "", "phone": "", "email": "", "verifiedAt": null, "avatarUrl": null, "pinSet": true, "role": "USER" },
+  "accessToken": "",
+  "refreshToken": "",
+  "expiresAt": "",
+  "next": "dashboard"
 }
 ```
 
-Example when OTP verification context is missing/invalid:
+## Admin endpoints (RBAC)
 
-```json
-{
-  "success": false,
-  "code": "OTP_SESSION_REQUIRED",
-  "message": "OTP verification is required before setting a PIN"
-}
-```
+All `/api/admin/*` routes require admin token role (`ADMIN` or `SUPER_ADMIN`).
 
-## Authentication state machine
+- `POST /api/admin/login`
+- `GET /api/admin/users`
+- `PATCH /api/admin/users/:userId`
+- `PATCH /api/admin/users/:userId/reset-pin`
+- `DELETE /api/admin/users/:userId`
+- `GET /api/admin/tables`
+- `PUT /api/admin/settings`
 
-States:
-- `IDENTITY_VERIFIED`
-- `OTP_VERIFIED`
-- `PIN_SET`
-- `ACTIVE`
+## Dashboard endpoints
 
-Transitions:
-1. Register start creates user at `IDENTITY_VERIFIED`.
-2. Register OTP verification moves user to `OTP_VERIFIED`.
-3. PIN setup moves user to `PIN_SET`.
-4. Successful login moves user to `ACTIVE`.
+- `GET /api/dashboard/financial-health`
+- `GET /api/dashboard/net-worth`
+- `GET /api/dashboard/expense-breakdown`
+- `GET /api/dashboard/alerts`
+- `GET /api/dashboard/prediction`
+- `GET /api/dashboard/lending-summary`
 
-Each transition is persisted in `AuthStateTransition`.
+All dashboard endpoints accept `month` and `year` query params, require auth + pin, and include cache headers.

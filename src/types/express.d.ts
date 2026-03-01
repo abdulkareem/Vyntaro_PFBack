@@ -6,6 +6,7 @@ declare global {
       authUserId?: string
       authPinSet?: boolean
       authRole?: 'USER' | 'ADMIN' | 'SUPER_ADMIN'
+      requestId?: string
     }
   }
 }
