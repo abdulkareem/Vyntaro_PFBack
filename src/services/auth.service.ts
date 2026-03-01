@@ -1,17 +1,31 @@
-import { AuthState, OtpPurpose, Prisma, UserRole } from '@prisma/client'
+import { AuthState, OtpPurpose, UserRole } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { comparePin, hashPin } from '../lib/security.js'
 import { createAuthToken } from '../lib/token.js'
 import { sendOtp } from '../messaging/otp.service.js'
 import { hashOtp } from './otp.service.js'
+import { issueRefreshToken, revokeUserRefreshTokens, rotateRefreshToken } from './session.service.js'
 
 const OTP_EXPIRY_MINUTES = 5
 const OTP_MAX_ATTEMPTS = 3
+
+type IdentityInput = { phone?: string; email?: string }
+
+type AuthUserShape = {
+  id: string
+  phone: string
+  email: string | null
+  verifiedAt?: string | null
+  avatarUrl?: string | null
+  pinSet: boolean
+  role: UserRole
+}
 
 export type AuthErrorCode =
   | 'INVALID_INPUT'
   | 'USER_EXISTS'
   | 'USER_NOT_FOUND'
+  | 'ACCOUNT_NOT_FOUND'
   | 'OTP_INVALID'
   | 'OTP_EXPIRED'
   | 'OTP_LIMIT_EXCEEDED'
@@ -20,334 +34,166 @@ export type AuthErrorCode =
   | 'OTP_SESSION_REQUIRED'
 
 export type ServiceError = { ok: false; code: AuthErrorCode; message: string }
+function error(code: AuthErrorCode, message: string): ServiceError { return { ok: false, code, message } }
 
-function error(code: AuthErrorCode, message: string): ServiceError {
-  return { ok: false, code, message }
-}
+const normalizeEmail = (email?: string) => email?.trim().toLowerCase()
+const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString()
+const validatePin = (pin: string) => /^\d{4}$/.test(pin)
+const expiryDate = () => new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000)
 
-type IdentityInput = {
-  phone?: string
-  email?: string
-}
-
-type RegisterInput = IdentityInput & {
-}
-
-type SetPinInput = {
-  pin: string
-  mode: 'register' | 'reset'
-  otpSessionId: string
-}
-
-type OtpMode = 'register' | 'reset'
-
-type OtpIdentityInput = IdentityInput & {
-  otp: string
-}
-
-function normalizeEmail(email?: string): string | undefined {
-  return email?.trim().toLowerCase()
-}
-
-function generateReferralCode(phone: string): string {
-  const digits = phone.replace(/\D/g, '').slice(-6) || 'USER'
-  const suffix = Math.random().toString(36).slice(2, 8).toUpperCase()
-  return `${digits}${suffix}`
-}
-
-function generateOtp(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString()
-}
-
-function otpExpiryDate() {
-  return new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000)
-}
-
-function resetSessionExpiryDate() {
-  return new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000)
-}
-
-function validatePin(pin: string): boolean {
-  return /^\d{4}$/.test(pin)
+function mapUser(user: { id: string; phone: string; email: string | null; pinSet: boolean; role: UserRole }): AuthUserShape {
+  return { id: user.id, phone: user.phone, email: user.email, pinSet: user.pinSet, role: user.role, verifiedAt: null, avatarUrl: null }
 }
 
 async function findUserByIdentity(input: IdentityInput) {
-  if (input.phone) {
-    return prisma.userAccount.findUnique({ where: { phone: input.phone } })
-  }
-
+  if (input.phone) return prisma.userAccount.findUnique({ where: { phone: input.phone } })
   if (!input.email) return null
   return prisma.userAccount.findUnique({ where: { email: normalizeEmail(input.email) } })
 }
 
-async function transitionState(userId: string, toState: AuthState, reason: string) {
-  const current = await prisma.userAccount.findUnique({ where: { id: userId }, select: { authState: true } })
-  if (!current) return
-
-  await prisma.$transaction([
-    prisma.userAccount.update({ where: { id: userId }, data: { authState: toState } }),
-    prisma.authStateTransition.create({
-      data: {
-        userId,
-        fromState: current.authState,
-        toState,
-        reason
-      }
-    })
-  ])
-}
-
 async function createOtpForPurpose(userId: string, otp: string, purpose: OtpPurpose) {
   await prisma.verificationCode.deleteMany({ where: { userId, purpose, consumedAt: null } })
-  return prisma.verificationCode.create({
-    data: {
-      userId,
-      purpose,
-      channel: 'PHONE',
-      codeHash: hashOtp(otp),
-      expiresAt: otpExpiryDate(),
-      attempts: 0,
-      maxAttempts: OTP_MAX_ATTEMPTS,
-      resendCount: 0
-    }
-  })
+  return prisma.verificationCode.create({ data: { userId, purpose, channel: 'PHONE', codeHash: hashOtp(otp), expiresAt: expiryDate(), attempts: 0, maxAttempts: OTP_MAX_ATTEMPTS, resendCount: 0 } })
 }
 
-async function verifyOtpForPurpose(userId: string, otp: string, purpose: OtpPurpose, consume = true) {
-  const code = await prisma.verificationCode.findFirst({
-    where: { userId, purpose, consumedAt: null },
-    orderBy: { createdAt: 'desc' }
-  })
-
-  if (!code) return error('OTP_EXPIRED', 'OTP session is missing or expired')
-  if (code.expiresAt < new Date()) return error('OTP_EXPIRED', 'OTP has expired')
-
-  if (code.attempts >= code.maxAttempts) {
-    return error('OTP_LIMIT_EXCEEDED', 'OTP attempt limit exceeded')
-  }
-
+async function verifyOtpForPurpose(userId: string, otp: string, purpose: OtpPurpose) {
+  const code = await prisma.verificationCode.findFirst({ where: { userId, purpose, consumedAt: null }, orderBy: { createdAt: 'desc' } })
+  if (!code || code.expiresAt < new Date()) return error('OTP_EXPIRED', 'OTP has expired')
+  if (code.attempts >= code.maxAttempts) return error('OTP_LIMIT_EXCEEDED', 'OTP attempt limit exceeded')
   if (hashOtp(otp) !== code.codeHash) {
     const attempts = code.attempts + 1
     await prisma.verificationCode.update({ where: { id: code.id }, data: { attempts } })
-    if (attempts >= code.maxAttempts) {
-      return error('OTP_LIMIT_EXCEEDED', 'OTP attempt limit exceeded')
-    }
-
-    return error('OTP_INVALID', 'Invalid OTP')
+    return attempts >= code.maxAttempts ? error('OTP_LIMIT_EXCEEDED', 'OTP attempt limit exceeded') : error('OTP_INVALID', 'Invalid OTP')
   }
-
-  if (consume) {
-    await prisma.verificationCode.update({ where: { id: code.id }, data: { consumedAt: new Date() } })
-  }
-
+  await prisma.verificationCode.update({ where: { id: code.id }, data: { consumedAt: new Date() } })
   return { ok: true as const, otpSessionId: code.id }
 }
 
-export async function registerStart(input: RegisterInput) {
-  if (!input.phone && !input.email) {
-    return error('INVALID_INPUT', 'Either phone or email is required')
-  }
-
-  const existingUser = await findUserByIdentity(input)
-  if (existingUser) {
-    return error('USER_EXISTS', 'User already exists')
-  }
-
-  if (!input.phone) {
-    return error('INVALID_INPUT', 'Phone is required')
-  }
-
-  const user = await prisma.userAccount.create({
-    data: {
-      phone: input.phone,
-      email: normalizeEmail(input.email),
-      referralCode: generateReferralCode(input.phone),
-      pinSet: false,
-      role: UserRole.USER,
-      authState: AuthState.IDENTITY_VERIFIED,
-      pinResetAllowed: false
-    }
-  })
-
-  const otp = generateOtp()
-  const otpSession = await createOtpForPurpose(user.id, otp, OtpPurpose.REGISTER)
-  const delivery = await sendOtp(user.phone, otp, user.email)
-
-  return {
-    ok: true as const,
-    success: true as const,
-    next: 'verify-otp' as const,
-    userId: user.id,
-    otpSessionId: otpSession.id,
-    delivery,
-    devOtp: process.env.NODE_ENV === 'production' ? undefined : { otp }
-  }
+export async function checkIdentity(input: IdentityInput & { phone?: string; email?: string }) {
+  const phoneUser = input.phone ? await prisma.userAccount.findUnique({ where: { phone: input.phone } }) : null
+  const emailUser = input.email ? await prisma.userAccount.findUnique({ where: { email: normalizeEmail(input.email) } }) : null
+  return { ok: true as const, exists: Boolean(phoneUser || emailUser), phoneExists: Boolean(phoneUser), emailExists: Boolean(emailUser), next: phoneUser || emailUser ? 'login' : 'register/start' }
 }
 
-export async function verifyRegistrationOtp(input: OtpIdentityInput) {
+export async function registerStart(input: IdentityInput) {
+  if (!input.phone) return error('INVALID_INPUT', 'Phone is required')
+  if (await findUserByIdentity(input)) return error('USER_EXISTS', 'User already exists')
+
+  const user = await prisma.userAccount.create({ data: { phone: input.phone, email: normalizeEmail(input.email), referralCode: `${input.phone.slice(-6)}${Math.random().toString(36).slice(2, 8).toUpperCase()}`, pinSet: false, role: UserRole.USER, authState: AuthState.IDENTITY_VERIFIED } })
+  const otp = generateOtp()
+  await createOtpForPurpose(user.id, otp, OtpPurpose.REGISTER)
+  await sendOtp(user.phone, otp, user.email)
+  return { ok: true as const, userId: user.id, next: 'register/verify', devOtp: process.env.NODE_ENV === 'production' ? undefined : { phoneOtp: otp, emailOtp: otp } }
+}
+
+export async function verifyRegistrationOtp(input: IdentityInput & { otp: string }) {
   const user = await findUserByIdentity(input)
   if (!user) return error('USER_NOT_FOUND', 'User not found')
-
-  const verification = await verifyOtpForPurpose(user.id, input.otp, OtpPurpose.REGISTER, false)
+  const verification = await verifyOtpForPurpose(user.id, input.otp, OtpPurpose.REGISTER)
   if (!verification.ok) return verification
 
-  await transitionState(user.id, AuthState.OTP_VERIFIED, 'register_otp_verified')
-
-  return {
-    ok: true as const,
-    success: true as const,
-    next: 'set-pin' as const,
-    userId: user.id,
-    otpSessionId: verification.otpSessionId
-  }
+  await prisma.userAccount.update({ where: { id: user.id }, data: { authState: AuthState.OTP_VERIFIED } })
+  const temporaryAuthToken = createAuthToken(user.id, false, user.role)
+  return { ok: true as const, user: mapUser(user), userId: user.id, otpSessionId: verification.otpSessionId, verificationToken: verification.otpSessionId, temporaryAuthToken, next: 'pin/set' }
 }
 
-export async function setUserPin(input: SetPinInput) {
-  if (!validatePin(input.pin)) return error('PIN_FORMAT_INVALID', 'PIN must be exactly 4 digits')
-
-  const requiredPurpose = input.mode === 'register' ? OtpPurpose.REGISTER : OtpPurpose.PIN_RESET
-  const otpSession = await prisma.verificationCode.findUnique({
-    where: { id: input.otpSessionId },
-    include: { user: true }
-  })
-
-  if (!otpSession || otpSession.purpose !== requiredPurpose || otpSession.consumedAt) {
-    return error('OTP_SESSION_REQUIRED', 'OTP verification is required before setting a PIN')
-  }
-
-  if (Date.now() > otpSession.expiresAt.getTime()) {
-    return error('OTP_SESSION_REQUIRED', 'OTP verification is required before setting a PIN')
-  }
-
-  const user = otpSession.user
-  if (!user) return error('USER_NOT_FOUND', 'User not found')
-
-  const canSetViaRegistration = input.mode === 'register' && user.authState === AuthState.OTP_VERIFIED
-  const canSetViaReset =
-    input.mode === 'reset' && user.pinResetAllowed && !!user.pinResetAllowedUntil && user.pinResetAllowedUntil > new Date()
-
-  if (!canSetViaRegistration && !canSetViaReset) {
-    return error('OTP_SESSION_REQUIRED', 'OTP verification is required before setting a PIN')
-  }
-
-  const pinHash = await hashPin(input.pin)
-  await prisma.$transaction([
-    prisma.userPin.upsert({
-      where: { userId: user.id },
-      create: { userId: user.id, pinHash },
-      update: { pinHash }
-    }),
-    prisma.userAccount.update({
-      where: { id: user.id },
-      data: { pinSet: true, pinResetAllowed: false, pinResetAllowedUntil: null }
-    }),
-    prisma.verificationCode.update({
-      where: { id: otpSession.id },
-      data: { consumedAt: new Date(), attempts: 0, resendCount: 0 }
-    })
-  ])
-
-  if (canSetViaRegistration) {
-    await transitionState(user.id, AuthState.PIN_SET, 'pin_set_after_registration')
-  }
-
-  return { ok: true as const, success: true as const, next: 'login' as const }
+async function loginEnvelope(user: { id: string; phone: string; email: string | null; pinSet: boolean; role: UserRole }) {
+  const accessToken = createAuthToken(user.id, user.pinSet, user.role)
+  const refreshToken = issueRefreshToken(user.id)
+  return { ok: true as const, user: mapUser(user), accessToken, refreshToken, expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 7).toISOString(), next: 'dashboard' }
 }
 
-export async function login(input: IdentityInput & { pin: string }) {
-  const user = await findUserByIdentity(input)
-  if (!user) return error('USER_NOT_FOUND', 'User not found')
+export async function login(input: IdentityInput & { identifier?: string; pin: string }) {
+  const resolved = input.identifier
+    ? input.identifier.includes('@')
+      ? { ...input, email: input.identifier }
+      : { ...input, phone: input.identifier }
+    : input
+  const user = await findUserByIdentity(resolved)
+  if (!user) return error('ACCOUNT_NOT_FOUND', 'Account not found')
 
   const savedPin = await prisma.userPin.findUnique({ where: { userId: user.id } })
   if (!savedPin) return error('INVALID_PIN', 'Invalid PIN')
-
   const valid = await comparePin(input.pin, savedPin.pinHash)
   if (!valid) return error('INVALID_PIN', 'Invalid PIN')
 
   if (user.authState !== AuthState.ACTIVE) {
-    await transitionState(user.id, AuthState.ACTIVE, 'successful_login')
+    await prisma.userAccount.update({ where: { id: user.id }, data: { authState: AuthState.ACTIVE } })
   }
 
-  return {
-    ok: true as const,
-    success: true as const,
-    token: createAuthToken(user.id, true, user.role),
-    user: {
-      id: user.id,
-      phone: user.phone,
-      email: user.email
-    }
-  }
+  return loginEnvelope(user)
 }
 
-export async function resetPinStart(input: RegisterInput) {
+export async function refreshAuth(refreshToken: string) {
+  const rotated = rotateRefreshToken(refreshToken)
+  if (!rotated) return error('USER_NOT_FOUND', 'Invalid refresh token')
+  const user = await prisma.userAccount.findUnique({ where: { id: rotated.userId } })
+  if (!user) return error('USER_NOT_FOUND', 'User not found')
+  const accessToken = createAuthToken(user.id, user.pinSet, user.role)
+  return { ok: true as const, user: mapUser(user), accessToken, refreshToken: rotated.refreshToken, expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 7).toISOString(), next: 'dashboard' }
+}
+
+export async function otpRequest(input: IdentityInput, purpose: OtpPurpose = OtpPurpose.REGISTER) {
   const user = await findUserByIdentity(input)
   if (!user) return error('USER_NOT_FOUND', 'User not found')
-
   const otp = generateOtp()
-  const otpSession = await createOtpForPurpose(user.id, otp, OtpPurpose.PIN_RESET)
-  await prisma.userAccount.update({ where: { id: user.id }, data: { pinResetAllowed: false, pinResetAllowedUntil: null } })
-
-  const delivery = await sendOtp(user.phone, otp, user.email)
-  return {
-    ok: true as const,
-    success: true as const,
-    next: 'verify-otp' as const,
-    userId: user.id,
-    otpSessionId: otpSession.id,
-    delivery,
-    devOtp: process.env.NODE_ENV === 'production' ? undefined : { otp }
-  }
-}
-
-export async function verifyResetPinOtp(input: OtpIdentityInput) {
-  const user = await findUserByIdentity(input)
-  if (!user) return error('USER_NOT_FOUND', 'User not found')
-
-  const verification = await verifyOtpForPurpose(user.id, input.otp, OtpPurpose.PIN_RESET, false)
-  if (!verification.ok) return verification
-
-  await prisma.userAccount.update({
-    where: { id: user.id },
-    data: {
-      pinResetAllowed: true,
-      pinResetAllowedUntil: resetSessionExpiryDate()
-    }
-  })
-
-  return {
-    ok: true as const,
-    success: true as const,
-    next: 'set-pin' as const,
-    userId: user.id,
-    otpSessionId: verification.otpSessionId
-  }
-}
-
-export async function resendOtp(input: IdentityInput, purpose: OtpPurpose) {
-  const user = await findUserByIdentity(input)
-  if (!user) return error('USER_NOT_FOUND', 'User not found')
-
-  const otp = generateOtp()
-  const otpSession = await createOtpForPurpose(user.id, otp, purpose)
+  await createOtpForPurpose(user.id, otp, purpose)
   await sendOtp(user.phone, otp, user.email)
-
-  if (purpose === OtpPurpose.PIN_RESET) {
-    await prisma.userAccount.update({
-      where: { id: user.id },
-      data: { pinResetAllowed: false, pinResetAllowedUntil: null }
-    })
-  }
-
-  return { ok: true as const, success: true as const, otpSessionId: otpSession.id }
+  return { ok: true as const, next: 'otp/verify', devOtp: process.env.NODE_ENV === 'production' ? undefined : { phoneOtp: otp, emailOtp: otp } }
 }
 
-export async function resendOtpByMode(input: IdentityInput & { mode: OtpMode }) {
-  const purpose = input.mode === 'register' ? OtpPurpose.REGISTER : OtpPurpose.PIN_RESET
-  return resendOtp(input, purpose)
-}
-
-export async function checkIdentity(input: IdentityInput) {
+export async function otpVerify(input: IdentityInput & { otp: string; purpose?: 'register' | 'reset' }) {
   const user = await findUserByIdentity(input)
-  return { ok: true as const, exists: Boolean(user) }
+  if (!user) return error('USER_NOT_FOUND', 'User not found')
+  const purpose = input.purpose === 'reset' ? OtpPurpose.PIN_RESET : OtpPurpose.REGISTER
+  return verifyOtpForPurpose(user.id, input.otp, purpose)
+}
+
+export async function resetPinStart(input: IdentityInput) {
+  const user = await findUserByIdentity(input)
+  if (!user) return error('USER_NOT_FOUND', 'User not found')
+  const otp = generateOtp()
+  await createOtpForPurpose(user.id, otp, OtpPurpose.PIN_RESET)
+  await sendOtp(user.phone, otp, user.email)
+  return { ok: true as const, userId: user.id, next: 'pin/reset/verify', devOtp: process.env.NODE_ENV === 'production' ? undefined : { phoneOtp: otp, emailOtp: otp } }
+}
+
+export async function verifyResetPinOtp(input: IdentityInput & { otp: string }) {
+  const user = await findUserByIdentity(input)
+  if (!user) return error('USER_NOT_FOUND', 'User not found')
+  const verification = await verifyOtpForPurpose(user.id, input.otp, OtpPurpose.PIN_RESET)
+  if (!verification.ok) return verification
+  await prisma.userAccount.update({ where: { id: user.id }, data: { pinResetAllowed: true, pinResetAllowedUntil: expiryDate() } })
+  return { ok: true as const, userId: user.id, otpSessionId: verification.otpSessionId, next: 'pin/reset/complete' }
+}
+
+export async function setUserPin(input: { pin: string; mode: 'register' | 'reset'; otpSessionId: string }) {
+  if (!validatePin(input.pin)) return error('PIN_FORMAT_INVALID', 'PIN must be exactly 4 numeric digits')
+  const otpSession = await prisma.verificationCode.findUnique({ where: { id: input.otpSessionId }, include: { user: true } })
+  if (!otpSession || otpSession.expiresAt < new Date()) return error('OTP_SESSION_REQUIRED', 'OTP session required')
+  const requiredPurpose = input.mode === 'register' ? OtpPurpose.REGISTER : OtpPurpose.PIN_RESET
+  if (otpSession.purpose !== requiredPurpose || !otpSession.consumedAt) return error('OTP_SESSION_REQUIRED', 'OTP session required')
+
+  const pinHash = await hashPin(input.pin)
+  await prisma.userPin.upsert({ where: { userId: otpSession.userId }, create: { userId: otpSession.userId, pinHash }, update: { pinHash } })
+  await prisma.userAccount.update({ where: { id: otpSession.userId }, data: { pinSet: true, pinResetAllowed: false, pinResetAllowedUntil: null, authState: AuthState.PIN_SET } })
+  revokeUserRefreshTokens(otpSession.userId)
+  return { ok: true as const, next: 'login' }
+}
+
+export async function changePin(input: { userId: string; currentPin: string; newPin: string }) {
+  if (!validatePin(input.newPin)) return error('PIN_FORMAT_INVALID', 'PIN must be exactly 4 numeric digits')
+  const saved = await prisma.userPin.findUnique({ where: { userId: input.userId } })
+  if (!saved) return error('USER_NOT_FOUND', 'User not found')
+  if (!(await comparePin(input.currentPin, saved.pinHash))) return error('INVALID_PIN', 'Invalid PIN')
+  await prisma.userPin.update({ where: { userId: input.userId }, data: { pinHash: await hashPin(input.newPin) } })
+  revokeUserRefreshTokens(input.userId)
+  return { ok: true as const }
+}
+
+export async function updateProfile(input: { userId: string; email?: string; phone?: string; avatarUrl?: string; otpToken: string }) {
+  const session = await prisma.verificationCode.findUnique({ where: { id: input.otpToken } })
+  if (!session || session.userId !== input.userId || session.expiresAt < new Date()) return error('OTP_EXPIRED', 'OTP verification expired')
+  const user = await prisma.userAccount.update({ where: { id: input.userId }, data: { email: input.email ? normalizeEmail(input.email) : undefined, phone: input.phone, updatedAt: new Date() } })
+  return { ok: true as const, user: { id: user.id, phone: user.phone, email: user.email, verifiedAt: null, avatarUrl: input.avatarUrl ?? null } }
 }

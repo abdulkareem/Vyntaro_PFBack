@@ -1,61 +1,41 @@
 import type { NextFunction, Request, Response } from 'express'
+import { sendError } from '../lib/api-response.js'
 import { verifyAuthToken } from '../lib/token.js'
 
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+function parseToken(req: Request) {
   const authorization = req.header('authorization')
-  const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null
+  return authorization?.startsWith('Bearer ') ? authorization.slice(7) : null
+}
 
-  if (!token) {
-    return res.status(401).json({ error: 'unauthorized' })
-  }
-
+function hydrateAuth(req: Request) {
+  const token = parseToken(req)
+  if (!token) return null
   const payload = verifyAuthToken(token)
-  if (!payload) {
-    return res.status(401).json({ error: 'unauthorized' })
-  }
-
+  if (!payload) return null
   req.authUserId = payload.userId
   req.authPinSet = payload.pinSet
   req.authRole = payload.role
+  return payload
+}
+
+export function requireAuth(req: Request, res: Response, next: NextFunction) {
+  const payload = hydrateAuth(req)
+  if (!payload) return sendError(res, 401, 'UNAUTHORIZED', 'Invalid or missing token')
   return next()
 }
 
-export async function requireAuthWithPin(req: Request, res: Response, next: NextFunction) {
-  if (!req.authUserId || req.authPinSet === undefined) {
-    const authorization = req.header('authorization')
-    const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null
-    if (!token) return res.status(401).json({ error: 'unauthorized' })
-
-    const payload = verifyAuthToken(token)
-    if (!payload) return res.status(401).json({ error: 'unauthorized' })
-    req.authUserId = payload.userId
-    req.authPinSet = payload.pinSet
-    req.authRole = payload.role
-  }
-
-  if (!req.authPinSet) {
-    return res.status(403).json({ error: 'pin_required' })
-  }
-
+export function requireAuthWithPin(req: Request, res: Response, next: NextFunction) {
+  const payload = req.authUserId ? { userId: req.authUserId, pinSet: req.authPinSet, role: req.authRole } : hydrateAuth(req)
+  if (!payload) return sendError(res, 401, 'UNAUTHORIZED', 'Invalid or missing token')
+  if (!payload.pinSet) return sendError(res, 403, 'FORBIDDEN', 'PIN setup required')
   return next()
 }
 
-export async function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!req.authUserId || !req.authRole) {
-    const authorization = req.header('authorization')
-    const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null
-    if (!token) return res.status(401).json({ error: 'unauthorized' })
-
-    const payload = verifyAuthToken(token)
-    if (!payload) return res.status(401).json({ error: 'unauthorized' })
-    req.authUserId = payload.userId
-    req.authPinSet = payload.pinSet
-    req.authRole = payload.role
+export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  const payload = req.authUserId ? { userId: req.authUserId, pinSet: req.authPinSet, role: req.authRole } : hydrateAuth(req)
+  if (!payload) return sendError(res, 401, 'UNAUTHORIZED', 'Invalid or missing token')
+  if (payload.role !== 'ADMIN' && payload.role !== 'SUPER_ADMIN') {
+    return sendError(res, 403, 'FORBIDDEN', 'Admin role required')
   }
-
-  if (req.authRole !== 'ADMIN' && req.authRole !== 'SUPER_ADMIN') {
-    return res.status(403).json({ error: 'forbidden' })
-  }
-
   return next()
 }
