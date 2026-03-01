@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Vyntaro PF Backend API
-  version: 1.0.0
+  version: 1.1.0
 servers:
   - url: http://localhost:8080
 components:
@@ -10,35 +10,145 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+  schemas:
+    DashboardEnvelope:
+      type: object
+      properties:
+        requestId: { type: string }
+        timestamp: { type: string, format: date-time }
+        data:
+          $ref: '#/components/schemas/DashboardData'
+    DashboardData:
+      type: object
+      required: [userName, profilePhoto, monthLabel, balance, income, expense, metricCards, todaySummary, budgetSummary, analytics, insights, ledgerCategoriesState]
+      properties:
+        userName: { type: string }
+        profilePhoto: { type: string }
+        monthLabel: { type: string }
+        balance: { type: number }
+        income: { type: number }
+        expense: { type: number }
+        metricCards:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+              amount: { type: number }
+              href: { type: string }
+        analytics:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              income: { type: number }
+              expense: { type: number }
+        insights:
+          type: object
 security:
   - bearerAuth: []
 paths:
   /api/dashboard/summary:
     get:
-      summary: Dashboard summary
+      summary: Dashboard summary by month
       parameters:
         - in: query
           name: month
-          schema: { type: integer }
-        - in: query
-          name: year
-          schema: { type: integer }
+          required: true
+          schema: { type: string, pattern: '^\\d{4}-(0[1-9]|1[0-2])$' }
       responses:
-        '200': { description: OK }
+        '200':
+          description: Dashboard payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardEnvelope'
+        '401': { description: Unauthorized }
+        '403': { description: Forbidden }
+        '422': { description: Validation error }
   /api/dashboard/financial-health:
     get:
-      summary: Financial health
+      summary: Financial health insight
+      parameters:
+        - in: query
+          name: month
+          required: true
+          schema: { type: string, pattern: '^(0[1-9]|1[0-2]|[1-9])$' }
+        - in: query
+          name: year
+          required: true
+          schema: { type: string, pattern: '^\\d{4}$' }
       responses:
         '200': { description: OK }
-  /api/ledger/categories:
-    get: { summary: List categories, responses: { '200': { description: OK } } }
-    post: { summary: Create category, responses: { '201': { description: Created } } }
-  /api/ledger/entries:
-    get: { summary: List entries, responses: { '200': { description: OK } } }
-    post: { summary: Create entry, responses: { '201': { description: Created } } }
-  /api/budgets:
-    get: { summary: List budgets, responses: { '200': { description: OK } } }
-    post: { summary: Create budget, responses: { '201': { description: Created } } }
-  /api/profile/me:
-    get: { summary: Current profile, responses: { '200': { description: OK } } }
-    patch: { summary: Update profile, responses: { '200': { description: OK } } }
+  /api/dashboard/net-worth:
+    get:
+      summary: Net worth insight
+      parameters:
+        - in: query
+          name: month
+          required: true
+          schema: { type: string, pattern: '^(0[1-9]|1[0-2]|[1-9])$' }
+        - in: query
+          name: year
+          required: true
+          schema: { type: string, pattern: '^\\d{4}$' }
+      responses:
+        '200': { description: OK }
+  /api/dashboard/expense-breakdown:
+    get:
+      summary: Expense breakdown insight
+      parameters:
+        - in: query
+          name: month
+          required: true
+          schema: { type: string, pattern: '^(0[1-9]|1[0-2]|[1-9])$' }
+        - in: query
+          name: year
+          required: true
+          schema: { type: string, pattern: '^\\d{4}$' }
+      responses:
+        '200': { description: OK }
+  /api/dashboard/alerts:
+    get:
+      summary: Alerts insight
+      parameters:
+        - in: query
+          name: month
+          required: true
+          schema: { type: string, pattern: '^(0[1-9]|1[0-2]|[1-9])$' }
+        - in: query
+          name: year
+          required: true
+          schema: { type: string, pattern: '^\\d{4}$' }
+      responses:
+        '200': { description: OK }
+  /api/dashboard/prediction:
+    get:
+      summary: Prediction insight
+      parameters:
+        - in: query
+          name: month
+          required: true
+          schema: { type: string, pattern: '^(0[1-9]|1[0-2]|[1-9])$' }
+        - in: query
+          name: year
+          required: true
+          schema: { type: string, pattern: '^\\d{4}$' }
+      responses:
+        '200': { description: OK }
+  /api/dashboard/lending-summary:
+    get:
+      summary: Lending summary insight
+      parameters:
+        - in: query
+          name: month
+          required: true
+          schema: { type: string, pattern: '^(0[1-9]|1[0-2]|[1-9])$' }
+        - in: query
+          name: year
+          required: true
+          schema: { type: string, pattern: '^\\d{4}$' }
+      responses:
+        '200': { description: OK }

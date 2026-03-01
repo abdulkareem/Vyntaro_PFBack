@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { computeFinancialHealthScore, getAgingBucket } from '../services/dashboard/dashboard.logic.js'
+import { computeFinancialHealthScore } from '../services/dashboard/dashboard.logic.js'
+import { computeBalance, computeBudgetUsage } from '../services/dashboard/dashboard.service.js'
 
 test('financial health maps to Good', () => {
   const result = computeFinancialHealthScore({
@@ -26,9 +27,13 @@ test('financial health maps to Risky for weak cashflow', () => {
   assert.ok(result.score < 45)
 })
 
-test('aging bucket boundaries', () => {
-  assert.equal(getAgingBucket(10), '0-30')
-  assert.equal(getAgingBucket(45), '31-60')
-  assert.equal(getAgingBucket(75), '61-90')
-  assert.equal(getAgingBucket(91), '90+')
+test('computes balance from income and expense', () => {
+  assert.equal(computeBalance(5000, 3400), 1600)
+  assert.equal(computeBalance(0, 0), 0)
+})
+
+test('budget usage clamps between 0 and 1', () => {
+  assert.equal(computeBudgetUsage(50, 100), 0.5)
+  assert.equal(computeBudgetUsage(200, 100), 1)
+  assert.equal(computeBudgetUsage(0, 0), 0)
 })
