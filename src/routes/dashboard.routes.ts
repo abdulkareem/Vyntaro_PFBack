@@ -2,21 +2,33 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { sendError } from '../lib/api-response.js'
 import { requireAuthWithPin } from '../middleware/auth.middleware.js'
-import { calculateFinancialHealth, generateDashboardAlerts, getExpenseBreakdown, getLendingSummary, getMonthlyPrediction, getNetWorthSummary } from '../services/dashboard/dashboard.service.js'
+import { calculateFinancialHealth, generateDashboardAlerts, getDashboardSummary, getExpenseBreakdown, getLendingSummary, getMonthlyPrediction, getNetWorthSummary } from '../services/dashboard/dashboard.service.js'
 
 export const dashboardRouter = Router()
 
 dashboardRouter.use(requireAuthWithPin)
 
 const querySchema = z.object({ month: z.coerce.number().int().min(1).max(12), year: z.coerce.number().int().min(2000).max(2200) })
+const optionalQuerySchema = querySchema.partial()
 const cache = 'private, max-age=60, stale-while-revalidate=120'
 
-function parseMonthYear(query: unknown) {
-  const parsed = querySchema.safeParse(query)
-  return parsed.success ? parsed.data : null
+function parseMonthYear(query: unknown, required = true) {
+  const parsed = (required ? querySchema : optionalQuerySchema).safeParse(query)
+  if (!parsed.success) return null
+  const now = new Date()
+  return {
+    month: parsed.data.month ?? now.getUTCMonth() + 1,
+    year: parsed.data.year ?? now.getUTCFullYear()
+  }
 }
 
 dashboardRouter.use((_req, res, next) => { res.setHeader('Cache-Control', cache); next() })
+
+dashboardRouter.get('/summary', async (req, res) => {
+  const parsed = parseMonthYear(req.query, false)
+  if (!parsed) return sendError(res, 400, 'INVALID_INPUT', 'Invalid month/year query')
+  return res.json(await getDashboardSummary(req.authUserId!, parsed.month, parsed.year, ))
+})
 
 dashboardRouter.get('/financial-health', async (req, res) => {
   const parsed = parseMonthYear(req.query)

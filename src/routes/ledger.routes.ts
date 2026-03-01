@@ -10,7 +10,7 @@ ledgerRouter.use(requireAuth)
 
 const createCategorySchema = z.object({
   name: z.string().trim().min(1).max(80),
-  type: z.enum(['income', 'expense'])
+  type: z.enum(['income', 'expense', 'bill', 'ledger'])
 })
 
 const createEntrySchema = z.object({
@@ -19,6 +19,16 @@ const createEntrySchema = z.object({
   categoryId: z.string().min(1),
   description: z.string().trim().max(300).optional(),
   date: z.coerce.date().optional()
+})
+
+const listEntryQuery = z.object({
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional(),
+  type: z.enum(['income', 'expense']).optional(),
+  categoryId: z.string().optional(),
+  search: z.string().optional(),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional()
 })
 
 const defaultCategories: Array<{ name: string; type: 'income' | 'expense'; bucket: CategoryBucket }> = [
@@ -31,11 +41,13 @@ const defaultCategories: Array<{ name: string; type: 'income' | 'expense'; bucke
   { name: 'Entertainment', type: 'expense', bucket: CategoryBucket.ENTERTAINMENT }
 ]
 
+const idempotencyStore = new Map<string, unknown>()
+
 function asyncHandler(handler: RequestHandler): RequestHandler {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next)
 }
 
-function toCategoryKind(type: 'income' | 'expense') {
+function toCategoryKind(type: 'income' | 'expense' | 'bill' | 'ledger') {
   return type === 'income' ? CategoryKind.INCOME : CategoryKind.EXPENSE
 }
 
@@ -96,212 +108,148 @@ async function getOrCreateSystemAccount(userId: string, accountType: AccountType
   })
 }
 
-ledgerRouter.get(
-  '/categories',
-  asyncHandler(async (req, res) => {
-    const userId = req.user?.id ?? req.authUserId
-    if (!userId) {
-      return res.status(401).json({ success: false, error: 'UNAUTHORIZED' })
-    }
+ledgerRouter.get('/categories', asyncHandler(async (req, res) => {
+  const userId = req.user?.id ?? req.authUserId
+  if (!userId) return res.status(401).json({ success: false, error: 'UNAUTHORIZED' })
 
-    await ensureDefaultCategories(userId)
-
-    const categories = await prisma.category.findMany({
-      where: { userId },
-      select: { id: true, name: true, kind: true },
-      orderBy: { name: 'asc' }
-    })
-
-    return res.json({
-      success: true,
-      data: categories.map(mapCategory)
-    })
+  await ensureDefaultCategories(userId)
+  const type = req.query.type?.toString()
+  const categories = await prisma.category.findMany({
+    where: { userId, ...(type === 'income' ? { kind: CategoryKind.INCOME } : type === 'expense' || type === 'bill' || type === 'ledger' ? { kind: CategoryKind.EXPENSE } : {}) },
+    select: { id: true, name: true, kind: true },
+    orderBy: { name: 'asc' }
   })
-)
 
-ledgerRouter.post(
-  '/categories',
-  asyncHandler(async (req, res) => {
-    const userId = req.user?.id ?? req.authUserId
-    if (!userId) {
-      return res.status(401).json({ success: false, error: 'UNAUTHORIZED' })
-    }
+  return res.json({ success: true, data: categories.map(mapCategory) })
+}))
 
-    const parsed = createCategorySchema.safeParse(req.body)
-    if (!parsed.success) {
-      return res.status(400).json({ success: false, error: 'INVALID_INPUT' })
-    }
+ledgerRouter.post('/categories', asyncHandler(async (req, res) => {
+  const userId = req.user?.id ?? req.authUserId
+  if (!userId) return res.status(401).json({ success: false, error: 'UNAUTHORIZED' })
 
-    const name = parsed.data.name
-    const slug = toSlug(name)
+  const parsed = createCategorySchema.safeParse(req.body)
+  if (!parsed.success) return res.status(422).json({ success: false, error: 'INVALID_INPUT', fields: parsed.error.flatten().fieldErrors })
 
-    const existing = await prisma.category.findUnique({
-      where: { userId_slug: { userId, slug } },
-      select: { id: true, name: true, kind: true }
-    })
+  const name = parsed.data.name
+  const slug = toSlug(name)
 
-    if (existing) {
-      return res.status(409).json({ success: false, error: 'CATEGORY_EXISTS' })
-    }
+  const existing = await prisma.category.findUnique({ where: { userId_slug: { userId, slug } }, select: { id: true, name: true, kind: true } })
+  if (existing) return res.status(409).json({ success: false, error: 'CATEGORY_EXISTS' })
 
-    const category = await prisma.category.create({
-      data: {
-        userId,
-        name,
-        slug,
-        kind: toCategoryKind(parsed.data.type),
-        bucket: CategoryBucket.OTHER
-      },
-      select: { id: true, name: true, kind: true }
-    })
-
-    return res.status(201).json({ success: true, data: mapCategory(category) })
+  const category = await prisma.category.create({
+    data: { userId, name, slug, kind: toCategoryKind(parsed.data.type), bucket: CategoryBucket.OTHER },
+    select: { id: true, name: true, kind: true }
   })
-)
 
-ledgerRouter.get(
-  '/entries',
-  asyncHandler(async (req, res) => {
-    const userId = req.user?.id ?? req.authUserId
-    if (!userId) {
-      return res.status(401).json({ success: false, error: 'UNAUTHORIZED' })
-    }
+  return res.status(201).json({ success: true, data: mapCategory(category) })
+}))
 
-    const entries = await prisma.journalEntry.findMany({
-      where: { userId },
-      orderBy: [{ transactionDate: 'desc' }, { id: 'desc' }],
-      select: {
-        id: true,
-        description: true,
-        transactionDate: true,
-        lines: {
-          where: { categoryId: { not: null } },
-          select: { amount: true, categoryId: true, account: { select: { accountType: true } } }
+ledgerRouter.patch('/categories/:id', asyncHandler(async (req, res) => {
+  const userId = req.authUserId!
+  const parsed = createCategorySchema.partial().safeParse(req.body)
+  if (!parsed.success) return res.status(422).json({ success: false, error: 'INVALID_INPUT', fields: parsed.error.flatten().fieldErrors })
+  const existing = await prisma.category.findFirst({ where: { id: req.params.id, userId }, select: { id: true } })
+  if (!existing) return res.status(404).json({ success: false, error: 'CATEGORY_NOT_FOUND' })
+  const updated = await prisma.category.update({ where: { id: existing.id }, data: { name: parsed.data.name, kind: parsed.data.type ? toCategoryKind(parsed.data.type) : undefined } , select: { id: true, name: true, kind: true }})
+  return res.json({ success: true, data: mapCategory(updated) })
+}))
+
+ledgerRouter.get('/entries', asyncHandler(async (req, res) => {
+  const userId = req.user?.id ?? req.authUserId
+  if (!userId) return res.status(401).json({ success: false, error: 'UNAUTHORIZED' })
+
+  const query = listEntryQuery.safeParse(req.query)
+  if (!query.success) return res.status(422).json({ success: false, error: 'INVALID_INPUT', fields: query.error.flatten().fieldErrors })
+  const page = query.data.page ?? 1
+  const pageSize = query.data.pageSize ?? 50
+
+  const entries = await prisma.journalEntry.findMany({
+    where: {
+      userId,
+      transactionDate: { gte: query.data.from, lte: query.data.to },
+      ...(query.data.search ? { description: { contains: query.data.search, mode: 'insensitive' } } : {}),
+      lines: {
+        some: {
+          ...(query.data.categoryId ? { categoryId: query.data.categoryId } : {}),
+          ...(query.data.type ? { account: { accountType: query.data.type === 'income' ? AccountType.INCOME : AccountType.EXPENSE } } : {})
         }
       }
-    })
-
-    const data = entries
-      .map((entry) => {
-        const line = entry.lines[0]
-        if (!line || !line.categoryId) return null
-
-        const type = line.account.accountType === AccountType.INCOME ? 'income' : line.account.accountType === AccountType.EXPENSE ? 'expense' : null
-        if (!type) return null
-
-        return {
-          id: entry.id,
-          amount: Number(line.amount),
-          type,
-          categoryId: line.categoryId,
-          description: entry.description ?? '',
-          date: entry.transactionDate.toISOString()
-        }
-      })
-      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
-
-    return res.json({ success: true, data })
+    },
+    orderBy: [{ transactionDate: 'desc' }, { id: 'desc' }],
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+    select: {
+      id: true,
+      description: true,
+      transactionDate: true,
+      lines: { where: { categoryId: { not: null } }, select: { amount: true, categoryId: true, account: { select: { accountType: true } } } }
+    }
   })
-)
 
-ledgerRouter.post(
-  '/entries',
-  asyncHandler(async (req, res) => {
-    const userId = req.user?.id ?? req.authUserId
-    if (!userId) {
-      return res.status(401).json({ success: false, error: 'UNAUTHORIZED' })
-    }
+  const data = entries.map((entry) => {
+    const line = entry.lines[0]
+    if (!line || !line.categoryId) return null
+    const type = line.account.accountType === AccountType.INCOME ? 'income' : line.account.accountType === AccountType.EXPENSE ? 'expense' : null
+    if (!type) return null
+    return { id: entry.id, amount: Number(line.amount), type, categoryId: line.categoryId, description: entry.description ?? '', date: entry.transactionDate.toISOString() }
+  }).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
 
-    const parsed = createEntrySchema.safeParse(req.body)
-    if (!parsed.success) {
-      return res.status(400).json({ success: false, error: 'INVALID_INPUT' })
-    }
+  return res.json({ success: true, data })
+}))
 
-    const category = await prisma.category.findFirst({
-      where: { id: parsed.data.categoryId, userId },
-      select: { id: true, kind: true }
-    })
+ledgerRouter.post('/entries', asyncHandler(async (req, res) => {
+  const userId = req.user?.id ?? req.authUserId
+  if (!userId) return res.status(401).json({ success: false, error: 'UNAUTHORIZED' })
 
-    if (!category) {
-      return res.status(404).json({ success: false, error: 'CATEGORY_NOT_FOUND' })
-    }
+  const idem = req.header('idempotency-key')
+  if (idem && idempotencyStore.has(`${userId}:${idem}`)) return res.status(201).json(idempotencyStore.get(`${userId}:${idem}`))
 
-    if (category.kind !== toCategoryKind(parsed.data.type)) {
-      return res.status(400).json({ success: false, error: 'CATEGORY_TYPE_MISMATCH' })
-    }
+  const parsed = createEntrySchema.safeParse(req.body)
+  if (!parsed.success) return res.status(422).json({ success: false, error: 'INVALID_INPUT', fields: parsed.error.flatten().fieldErrors })
 
-    const entryDate = parsed.data.date ?? new Date()
-    const amount = toAmount(parsed.data.amount)
+  const category = await prisma.category.findFirst({ where: { id: parsed.data.categoryId, userId }, select: { id: true, kind: true } })
+  if (!category) return res.status(404).json({ success: false, error: 'CATEGORY_NOT_FOUND' })
+  if (category.kind !== toCategoryKind(parsed.data.type)) return res.status(400).json({ success: false, error: 'CATEGORY_TYPE_MISMATCH' })
 
-    const [cashAccount, statementAccount] = await Promise.all([
-      getOrCreateSystemAccount(userId, AccountType.ASSET),
-      getOrCreateSystemAccount(userId, parsed.data.type === 'income' ? AccountType.INCOME : AccountType.EXPENSE)
-    ])
+  const entryDate = parsed.data.date ?? new Date()
+  const amount = toAmount(parsed.data.amount)
 
-    const entry = await prisma.$transaction(async (tx) => {
-      const createdEntry = await tx.journalEntry.create({
-        data: {
-          userId,
-          transactionDate: entryDate,
-          source: EntrySource.MANUAL,
-          description: parsed.data.description
-        },
-        select: { id: true, transactionDate: true, description: true }
-      })
+  const [cashAccount, statementAccount] = await Promise.all([
+    getOrCreateSystemAccount(userId, AccountType.ASSET),
+    getOrCreateSystemAccount(userId, parsed.data.type === 'income' ? AccountType.INCOME : AccountType.EXPENSE)
+  ])
 
-      if (parsed.data.type === 'income') {
-        await tx.journalLine.createMany({
-          data: [
-            {
-              journalEntryId: createdEntry.id,
-              accountId: cashAccount.id,
-              categoryId: category.id,
-              direction: EntryDirection.DEBIT,
-              amount
-            },
-            {
-              journalEntryId: createdEntry.id,
-              accountId: statementAccount.id,
-              categoryId: category.id,
-              direction: EntryDirection.CREDIT,
-              amount
-            }
-          ]
-        })
-      } else {
-        await tx.journalLine.createMany({
-          data: [
-            {
-              journalEntryId: createdEntry.id,
-              accountId: statementAccount.id,
-              categoryId: category.id,
-              direction: EntryDirection.DEBIT,
-              amount
-            },
-            {
-              journalEntryId: createdEntry.id,
-              accountId: cashAccount.id,
-              categoryId: category.id,
-              direction: EntryDirection.CREDIT,
-              amount
-            }
-          ]
-        })
-      }
-
-      return createdEntry
-    })
-
-    return res.status(201).json({
-      success: true,
-      data: {
-        id: entry.id,
-        amount: Number(amount),
-        type: parsed.data.type,
-        categoryId: category.id,
-        description: entry.description ?? '',
-        date: entry.transactionDate.toISOString()
-      }
-    })
+  const entry = await prisma.$transaction(async (tx) => {
+    const createdEntry = await tx.journalEntry.create({ data: { userId, transactionDate: entryDate, source: EntrySource.MANUAL, description: parsed.data.description }, select: { id: true, transactionDate: true, description: true } })
+    await tx.journalLine.createMany({ data: parsed.data.type === 'income' ? [
+      { journalEntryId: createdEntry.id, accountId: cashAccount.id, categoryId: category.id, direction: EntryDirection.DEBIT, amount },
+      { journalEntryId: createdEntry.id, accountId: statementAccount.id, categoryId: category.id, direction: EntryDirection.CREDIT, amount }
+    ] : [
+      { journalEntryId: createdEntry.id, accountId: statementAccount.id, categoryId: category.id, direction: EntryDirection.DEBIT, amount },
+      { journalEntryId: createdEntry.id, accountId: cashAccount.id, categoryId: category.id, direction: EntryDirection.CREDIT, amount }
+    ] })
+    return createdEntry
   })
-)
+
+  const payload = { success: true, data: { id: entry.id, amount: Number(amount), type: parsed.data.type, categoryId: category.id, description: entry.description ?? '', date: entry.transactionDate.toISOString() } }
+  if (idem) idempotencyStore.set(`${userId}:${idem}`, payload)
+  return res.status(201).json(payload)
+}))
+
+ledgerRouter.patch('/entries/:id', asyncHandler(async (req, res) => {
+  const userId = req.authUserId!
+  const parsed = createEntrySchema.partial().safeParse(req.body)
+  if (!parsed.success) return res.status(422).json({ success: false, error: 'INVALID_INPUT', fields: parsed.error.flatten().fieldErrors })
+  const existing = await prisma.journalEntry.findFirst({ where: { id: req.params.id, userId }, select: { id: true } })
+  if (!existing) return res.status(404).json({ success: false, error: 'ENTRY_NOT_FOUND' })
+  const updated = await prisma.journalEntry.update({ where: { id: existing.id }, data: { description: parsed.data.description, transactionDate: parsed.data.date }, select: { id: true, transactionDate: true, description: true } })
+  return res.json({ success: true, data: { id: updated.id, description: updated.description ?? '', date: updated.transactionDate.toISOString() } })
+}))
+
+ledgerRouter.delete('/entries/:id', asyncHandler(async (req, res) => {
+  const userId = req.authUserId!
+  const existing = await prisma.journalEntry.findFirst({ where: { id: req.params.id, userId }, select: { id: true } })
+  if (!existing) return res.status(404).json({ success: false, error: 'ENTRY_NOT_FOUND' })
+  await prisma.journalEntry.delete({ where: { id: existing.id } })
+  return res.status(204).send()
+}))

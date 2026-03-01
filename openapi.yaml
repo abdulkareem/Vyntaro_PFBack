@@ -1,0 +1,44 @@
+openapi: 3.1.0
+info:
+  title: Vyntaro PF Backend API
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+security:
+  - bearerAuth: []
+paths:
+  /api/dashboard/summary:
+    get:
+      summary: Dashboard summary
+      parameters:
+        - in: query
+          name: month
+          schema: { type: integer }
+        - in: query
+          name: year
+          schema: { type: integer }
+      responses:
+        '200': { description: OK }
+  /api/dashboard/financial-health:
+    get:
+      summary: Financial health
+      responses:
+        '200': { description: OK }
+  /api/ledger/categories:
+    get: { summary: List categories, responses: { '200': { description: OK } } }
+    post: { summary: Create category, responses: { '201': { description: Created } } }
+  /api/ledger/entries:
+    get: { summary: List entries, responses: { '200': { description: OK } } }
+    post: { summary: Create entry, responses: { '201': { description: Created } } }
+  /api/budgets:
+    get: { summary: List budgets, responses: { '200': { description: OK } } }
+    post: { summary: Create budget, responses: { '201': { description: Created } } }
+  /api/profile/me:
+    get: { summary: Current profile, responses: { '200': { description: OK } } }
+    patch: { summary: Update profile, responses: { '200': { description: OK } } }
