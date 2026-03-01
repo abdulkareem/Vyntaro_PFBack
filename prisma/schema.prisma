@@ -194,6 +194,7 @@ model JournalEntry {
   userId          String
   transactionDate DateTime
   source          EntrySource
+  description     String?
 
   user  UserAccount   @relation(fields: [userId], references: [id], onDelete: Cascade)
   lines JournalLine[]
