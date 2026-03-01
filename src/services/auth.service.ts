@@ -17,7 +17,6 @@ export type AuthErrorCode =
   | 'OTP_EXPIRED'
   | 'OTP_LIMIT_EXCEEDED'
   | 'INVALID_PIN'
-  | 'PIN_MISMATCH'
   | 'PIN_FORMAT_INVALID'
   | 'STATE_VIOLATION'
 
@@ -36,9 +35,9 @@ type RegisterInput = IdentityInput & {
 }
 
 type SetPinInput = {
-  userId: string
   pin: string
-  confirmPin: string
+  mode: 'register' | 'reset'
+  otpSessionId: string
 }
 
 type OtpIdentityInput = IdentityInput & {
@@ -204,16 +203,31 @@ export async function verifyRegistrationOtp(input: OtpIdentityInput) {
 
 export async function setUserPin(input: SetPinInput) {
   if (!validatePin(input.pin)) return error('PIN_FORMAT_INVALID', 'PIN must be exactly 4 digits')
-  if (input.pin !== input.confirmPin) return error('PIN_MISMATCH', 'PIN and confirmPin must match')
 
-  const user = await prisma.userAccount.findUnique({ where: { id: input.userId } })
+  const requiredPurpose = input.mode === 'register' ? OtpPurpose.REGISTER : OtpPurpose.PIN_RESET
+  const otpSession = await prisma.verificationCode.findUnique({
+    where: { id: input.otpSessionId },
+    include: { user: true }
+  })
+
+  if (!otpSession || otpSession.purpose !== requiredPurpose || !otpSession.consumedAt) {
+    return error('STATE_VIOLATION', 'A verified OTP session is required to set a PIN')
+  }
+
+  const otpSessionExpiry = otpSession.expiresAt.getTime() + RESET_SESSION_MINUTES * 60 * 1000
+  if (Date.now() > otpSessionExpiry) {
+    return error('STATE_VIOLATION', 'OTP session has expired; verify OTP again')
+  }
+
+  const user = otpSession.user
   if (!user) return error('USER_NOT_FOUND', 'User not found')
 
-  const canSetViaRegistration = user.authState === AuthState.OTP_VERIFIED
-  const canSetViaReset = user.pinResetAllowed && !!user.pinResetAllowedUntil && user.pinResetAllowedUntil > new Date()
+  const canSetViaRegistration = input.mode === 'register' && user.authState === AuthState.OTP_VERIFIED
+  const canSetViaReset =
+    input.mode === 'reset' && user.pinResetAllowed && !!user.pinResetAllowedUntil && user.pinResetAllowedUntil > new Date()
 
   if (!canSetViaRegistration && !canSetViaReset) {
-    return error('STATE_VIOLATION', 'Current state does not allow PIN setup')
+    return error('STATE_VIOLATION', 'OTP verification is required before setting a PIN')
   }
 
   const pinHash = await hashPin(input.pin)

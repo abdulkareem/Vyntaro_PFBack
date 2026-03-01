@@ -10,7 +10,7 @@ All endpoints below are under `/api/auth`.
 |---|---|---|---|
 | `/register/start` | `POST` | `{ country?, phone?, email? }` | `{ success: true, next: "verify-otp", userId }` |
 | `/register/otp/verify` | `POST` | `{ phone?/email?, otp }` | `{ success: true, next: "set-pin", userId }` |
-| `/pin/set` | `POST` | `{ userId, pin, confirmPin }` | `{ success: true, next: "login" }` |
+| `/pin/set` | `POST` | `{ pin, mode }` + header `x-otp-session-id` | `{ success: true, next: "login" }` |
 | `/login` | `POST` | `{ phone?/email?, pin }` | `{ success: true, token }` |
 | `/pin/reset/start` | `POST` | `{ country?, phone?/email? }` | `{ success: true, next: "verify-otp", userId }` |
 | `/pin/reset/otp/verify` | `POST` | `{ phone?/email?, otp }` | `{ success: true, next: "set-pin", userId }` |

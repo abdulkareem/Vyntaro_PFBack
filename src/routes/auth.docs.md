@@ -47,7 +47,17 @@ All auth endpoints are rooted at `/api/auth`.
 }
 ```
 
-### Set PIN / Login
+### Set PIN
+```json
+{
+  "pin": "1234",
+  "mode": "register"
+}
+```
+
+Header required: `x-otp-session-id: <otpSessionId from otp verify>`
+
+### Login
 ```json
 {
   "phone": "+911234567890",
